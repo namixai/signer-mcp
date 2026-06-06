@@ -1,7 +1,7 @@
 {
   "$schema": "https://registry.modelcontextprotocol.io/schemas/server.json",
   "name": "@usenami/signer-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Sign CEX orders (Binance, OKX, Asterdex) from any MCP-aware AI agent with keys that never leave an AWS Nitro Enclave.",
   "homepage": "https://usenami.io/signer",
   "license": "MIT",

@@ -5,7 +5,7 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 ## [Unreleased]
 
 ### Added
-- (placeholder for additions queued after the first publish)
+- (placeholder)
 
 ### Changed
 - (placeholder)
@@ -13,7 +13,18 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 ### Fixed
 - (placeholder)
 
-## [0.1.0] — TBD (first publish, gated on signer gateway cutover)
+## [0.1.1] — 2026-06-06 (metadata republish)
+
+No code or behavior changes vs `0.1.0`. Republished so the npm registry picks up
+the corrected package metadata that landed in monorepo PR #557:
+
+### Changed
+- `repository.url` now points at the standalone public mirror
+  `https://github.com/namixai/signer-mcp.git` (was the private monorepo).
+- `bugs.url` likewise repointed to the public repo's issues page.
+- README updated with the ElizaOS Quick Start section + standalone-repo links.
+
+## [0.1.0] — 2026-06-05 (first publish)
 
 Initial release. Five MCP tools backed by the Usenami Signer gateway, with keys that never leave an AWS Nitro Enclave.
 

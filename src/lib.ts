@@ -5,7 +5,7 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.1.0";
+export const PACKAGE_VERSION = "0.1.1";
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 // ── Venue manifest (v0 static) ──
