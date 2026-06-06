@@ -1,0 +1,30 @@
+# What ships to npm. The `files` field in package.json is the source of truth
+# (npm includes only what's listed). This .npmignore is a belt-and-braces guard
+# in case `files` is ever loosened (e.g. someone wants `src/` in the tarball
+# for sourcemap consumers and doesn't realize tests come along for the ride).
+
+# Source — published consumers run dist/, not src/. If we ever ship sources,
+# explicitly drop tests and scripts here.
+src/
+tests/
+scripts/
+docs/
+
+# Build artifacts NOT in dist/
+*.tsbuildinfo
+coverage/
+
+# Dev config
+vitest.config.ts
+tsconfig.json
+.gitignore
+.npmignore
+
+# CI / workflows (live in .github/, not in package)
+.github/
+
+# Local
+node_modules/
+.env
+.env.local
+.DS_Store

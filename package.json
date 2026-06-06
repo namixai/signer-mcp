@@ -1,0 +1,64 @@
+{
+  "name": "@usenami/signer-mcp",
+  "version": "0.1.0",
+  "description": "Sign CEX orders from any MCP-aware AI agent (Claude Desktop, Cursor, ElizaOS) with keys that never leave an AWS Nitro Enclave.",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "signer-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "server.json"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "npm run build",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run",
+    "smoke": "npm run build && tsx scripts/smoke-test.ts"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "trading",
+    "binance",
+    "okx",
+    "perpetuals",
+    "attested-compute",
+    "aws-nitro-enclaves",
+    "claude",
+    "cursor",
+    "elizaos",
+    "ai-agents",
+    "usenami",
+    "signer"
+  ],
+  "author": "Usenami",
+  "license": "MIT",
+  "homepage": "https://usenami.io/signer",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/namixai/signer-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/namixai/signer-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.21.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.7"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://registry.modelcontextprotocol.io/schemas/server.json",
+  "name": "@usenami/signer-mcp",
+  "version": "0.1.0",
+  "description": "Sign CEX orders (Binance, OKX, Asterdex) from any MCP-aware AI agent with keys that never leave an AWS Nitro Enclave.",
+  "homepage": "https://usenami.io/signer",
+  "license": "MIT",
+  "tags": [
+    "trading",
+    "binance",
+    "okx",
+    "perpetuals",
+    "attested-compute",
+    "aws-nitro-enclaves",
+    "signer",
+    "ai-agents"
+  ],
+  "categories": ["trading", "finance", "security"],
+  "transport": {
+    "type": "stdio",
+    "command": "npx",
+    "args": ["-y", "@usenami/signer-mcp"]
+  },
+  "env_schema": {
+    "SIGNER_GATEWAY_URL": {
+      "description": "Override the Signer gateway URL (default: https://signer.usenami.io)",
+      "required": false
+    },
+    "SIGNER_API_TOKEN": {
+      "description": "Bearer token issued by usenami.io/signer. Required for everything except list_venues.",
+      "required": false,
+      "secret": true
+    }
+  },
+  "tools": [
+    {
+      "name": "list_venues",
+      "description": "List the venues supported by this Signer. Read-only static manifest — no gateway call.",
+      "readOnly": true
+    },
+    {
+      "name": "get_attestation",
+      "description": "Return the AWS Nitro attestation document (PCR0+sig) for the running enclave.",
+      "readOnly": true
+    },
+    {
+      "name": "get_account",
+      "description": "Return equity, free margin, and open positions for a venue.",
+      "readOnly": true
+    },
+    {
+      "name": "place_order",
+      "description": "Sign and submit a single market or limit order. Enclave enforces policy caps.",
+      "readOnly": false
+    },
+    {
+      "name": "cancel_order",
+      "description": "Cancel an outstanding order by venue order_id. Idempotent.",
+      "readOnly": false
+    }
+  ]
+}
