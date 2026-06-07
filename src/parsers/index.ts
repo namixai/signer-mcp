@@ -14,6 +14,9 @@
 
 import { parseAsterdexAccount } from "./asterdex.js";
 import { parseBinanceAccount } from "./binance.js";
+import { parseBybitAccount } from "./bybit.js";
+import { parseHyperliquidAccount } from "./hyperliquid.js";
+import { parseKucoinAccount } from "./kucoin.js";
 import { parseOkxAccount } from "./okx.js";
 import type { AccountParser } from "./types.js";
 
@@ -21,6 +24,10 @@ const PARSERS: Record<string, AccountParser> = {
   binance: parseBinanceAccount,
   okx: parseOkxAccount,
   asterdex: parseAsterdexAccount,
+  kucoin: parseKucoinAccount,
+  bybit: parseBybitAccount,
+  // Key matches the gateway's canonical venue id (note the `_main` suffix).
+  hyperliquid_main: parseHyperliquidAccount,
 };
 
 export function getAccountParser(venue: string): AccountParser | undefined {

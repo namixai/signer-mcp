@@ -1,6 +1,6 @@
 {
   "name": "@usenami/signer-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Sign CEX orders from any MCP-aware AI agent (Claude Desktop, Cursor, ElizaOS) with keys that never leave an AWS Nitro Enclave.",
   "type": "module",
   "main": "dist/index.js",
@@ -28,6 +28,9 @@
     "trading",
     "binance",
     "okx",
+    "kucoin",
+    "bybit",
+    "hyperliquid",
     "perpetuals",
     "attested-compute",
     "aws-nitro-enclaves",

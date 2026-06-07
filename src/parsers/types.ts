@@ -8,7 +8,10 @@
  */
 
 export interface NormalizedAccount {
-  /** Venue id (binance, okx, asterdex) — echoed for agent introspection. */
+  /**
+   * Venue id (binance, okx, asterdex, kucoin, bybit, hyperliquid_main) —
+   * echoed for agent introspection.
+   */
   venue: string;
   /**
    * Total margin balance in USD-equivalent. Some venues return USDT-collat;

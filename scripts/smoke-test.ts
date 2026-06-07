@@ -12,7 +12,8 @@
  *   1. Spawn `node dist/index.js` with the env above.
  *   2. Send `initialize` → expect protocol-version handshake.
  *   3. Send `tools/list` → expect 5 tools.
- *   4. Call `list_venues` → expect 3 venues (binance/okx/asterdex).
+ *   4. Call `list_venues` → expect 6 venues
+ *      (binance/okx/asterdex/kucoin/bybit/hyperliquid_main).
  *   5. Call `get_attestation` → expect either success (gateway up) or a
  *      gateway-unreachable error with the right hint message.
  *
@@ -183,14 +184,17 @@ async function main(): Promise<void> {
       venues: Array<{ venue: string }>;
     };
     check(
-      "list_venues returns 3 venues",
-      venuesBody.count === 3,
+      "list_venues returns 6 venues",
+      venuesBody.count === 6,
       `got ${venuesBody.count}`,
     );
     const venueIds = venuesBody.venues.map((v) => v.venue).sort();
     check(
-      "venues are binance/okx/asterdex",
-      JSON.stringify(venueIds) === JSON.stringify(["asterdex", "binance", "okx"]),
+      "venues are binance/okx/asterdex/kucoin/bybit/hyperliquid_main",
+      JSON.stringify(venueIds) ===
+        JSON.stringify(
+          ["asterdex", "binance", "bybit", "hyperliquid_main", "kucoin", "okx"],
+        ),
       `got: ${venueIds.join(",")}`,
     );
 

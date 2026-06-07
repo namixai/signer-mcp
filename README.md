@@ -2,7 +2,7 @@
 
 > Sign CEX orders from any MCP-aware AI agent — keys never leave an AWS Nitro Enclave.
 
-`signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a five-tool surface for trading real CEX/DEX accounts (Binance, OKX, Asterdex) without ever loading a private key into the agent's process — or yours.
+`signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a five-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without ever loading a private key into the agent's process — or yours.
 
 Status: **v0 (alpha)**. List of venues, attestation, account read, and place/cancel order on testnet.
 
@@ -123,9 +123,22 @@ Returns the static manifest of venues this Signer can sign for. **Read-only**, d
       "notes": "..."
     }
   ],
-  "count": 1
+  "count": 6
 }
 ```
+
+#### Supported venues
+
+| `venue` id          | asset class | auth scheme   | symbol example  | notes |
+|---------------------|-------------|---------------|-----------------|-------|
+| `binance`           | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures |
+| `okx`               | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap |
+| `asterdex`          | perp        | eip712 (bsc)  | `BTC-USD`       | Asterdex on-chain perp (BSC) |
+| `kucoin`            | perp        | hmac_sha256   | `XBTUSDTM`      | KuCoin Futures (HMAC + encrypted passphrase); qty in contracts |
+| `bybit`             | perp        | hmac_sha256   | `BTCUSDT`       | Bybit V5 linear (`category=linear`) |
+| `hyperliquid_main`  | perp        | eip712 (hyperliquid) | `BTC`    | Hyperliquid L1 perp; account read is the public `clearinghouseState` |
+
+The agent config block is identical for every venue — point `SIGNER_GATEWAY_URL` at your Signer and set `SIGNER_API_TOKEN`. Which venues a given token may trade is bound server-side to that token's policy; `list_venues` reports the full set the gateway can sign, not your per-token allow-list.
 
 ### `get_attestation`
 
@@ -166,8 +179,8 @@ Read-only. Requires `SIGNER_API_TOKEN`.
 Place a single market or limit order. The enclave signs the payload after checking policy caps.
 
 Args:
-- `venue` — one of `binance | okx | asterdex`
-- `symbol` — venue-native symbol (`BTCUSDT`, `BTC-USDT-SWAP`, etc.)
+- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_main`
+- `symbol` — venue-native symbol (`BTCUSDT`, `BTC-USDT-SWAP`, `XBTUSDTM`, `BTC`, etc. — see the venue table above)
 - `side` — `buy` | `sell`
 - `qty` — base-asset quantity (e.g. 0.001 for 0.001 BTC). Not USD-notional.
 - `type` — `market` | `limit`

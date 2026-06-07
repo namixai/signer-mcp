@@ -5,7 +5,7 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.1.1";
+export const PACKAGE_VERSION = "0.2.0";
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 // ── Venue manifest (v0 static) ──
@@ -42,6 +42,33 @@ export const STATIC_VENUES: VenueEntry[] = [
     notes:
       "Asterdex on-chain perp. Uses Asterdex platform-controlled API wallet " +
       "(narrow per-asset caps enforced by Signer policy).",
+  },
+  {
+    venue: "kucoin",
+    asset_class: "perp",
+    auth_scheme: "hmac_sha256",
+    notes:
+      "KuCoin Futures perp via REST. HMAC-SHA256 + KuCoin v2 encrypted " +
+      "passphrase, all signed inside the enclave. Symbol format: XBTUSDTM " +
+      "(KuCoin Futures contract code; qty is in contracts).",
+  },
+  {
+    venue: "bybit",
+    asset_class: "perp",
+    auth_scheme: "hmac_sha256",
+    notes:
+      "Bybit V5 linear perp via REST (category=linear). Symbol format: " +
+      "BTCUSDT (no slash).",
+  },
+  {
+    venue: "hyperliquid_main",
+    asset_class: "perp",
+    auth_scheme: "eip712",
+    network: "hyperliquid",
+    notes:
+      "Hyperliquid L1 perp. EIP-712 action signing (orders POST /exchange). " +
+      "Symbol format: bare coin name, e.g. BTC. Account state is a public " +
+      "read (POST /info clearinghouseState).",
   },
 ];
 

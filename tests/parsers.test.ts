@@ -14,17 +14,26 @@ import { getAccountParser } from "../src/parsers/index.js";
 import { parseBinanceAccount } from "../src/parsers/binance.js";
 import { parseOkxAccount } from "../src/parsers/okx.js";
 import { parseAsterdexAccount } from "../src/parsers/asterdex.js";
+import { parseKucoinAccount } from "../src/parsers/kucoin.js";
+import { parseBybitAccount } from "../src/parsers/bybit.js";
+import { parseHyperliquidAccount } from "../src/parsers/hyperliquid.js";
 
 describe("getAccountParser dispatcher", () => {
   it("returns the right parser for each known venue", () => {
     expect(getAccountParser("binance")).toBe(parseBinanceAccount);
     expect(getAccountParser("okx")).toBe(parseOkxAccount);
     expect(getAccountParser("asterdex")).toBe(parseAsterdexAccount);
+    expect(getAccountParser("kucoin")).toBe(parseKucoinAccount);
+    expect(getAccountParser("bybit")).toBe(parseBybitAccount);
+    // Gateway's canonical id has the `_main` suffix.
+    expect(getAccountParser("hyperliquid_main")).toBe(parseHyperliquidAccount);
   });
 
   it("returns undefined for unknown venue", () => {
     expect(getAccountParser("bitmex")).toBeUndefined();
     expect(getAccountParser("")).toBeUndefined();
+    // `hyperliquid` (without _main) is NOT registered — only the canonical id.
+    expect(getAccountParser("hyperliquid")).toBeUndefined();
   });
 });
 
@@ -258,5 +267,306 @@ describe("parseAsterdexAccount", () => {
     const out = parseAsterdexAccount({});
     expect(out.equity_usd).toBe(0);
     expect(out.positions).toEqual([]);
+  });
+});
+
+describe("parseKucoinAccount", () => {
+  it("parses balance(object) + positions(array) composite payload", () => {
+    const raw = {
+      balance: {
+        code: "200000",
+        data: {
+          accountEquity: 10000.0,
+          availableBalance: 8500.5,
+          marginBalance: 9000.0,
+          currency: "USDT",
+        },
+      },
+      positions: {
+        code: "200000",
+        data: [
+          {
+            symbol: "XBTUSDTM",
+            currentQty: 2,
+            avgEntryPrice: 67120.5,
+            unrealisedPnl: 1.23,
+            markPrice: 67200.0,
+            isOpen: true,
+          },
+          {
+            symbol: "ETHUSDTM",
+            currentQty: -5,
+            avgEntryPrice: 3800.0,
+            unrealisedPnl: -2.5,
+            markPrice: 3790.0,
+            isOpen: true,
+          },
+        ],
+      },
+    };
+    const out = parseKucoinAccount(raw);
+    expect(out.venue).toBe("kucoin");
+    expect(out.equity_usd).toBe(10000.0);
+    expect(out.free_margin_usd).toBe(8500.5);
+    expect(out.positions).toHaveLength(2);
+    expect(out.positions[0]).toMatchObject({
+      symbol: "XBTUSDTM",
+      qty: 2,
+      entry_price: 67120.5,
+      unrealized_pnl: 1.23,
+      mark_price: 67200.0,
+    });
+    expect(out.positions[1].qty).toBe(-5); // short
+  });
+
+  it("tolerates string-encoded numbers too", () => {
+    const raw = {
+      balance: { code: "200000", data: { accountEquity: "5000", availableBalance: "4000" } },
+      positions: { code: "200000", data: [] },
+    };
+    const out = parseKucoinAccount(raw);
+    expect(out.equity_usd).toBe(5000);
+    expect(out.free_margin_usd).toBe(4000);
+  });
+
+  it("filters zero/closed positions", () => {
+    const raw = {
+      balance: { code: "200000", data: { accountEquity: 100, availableBalance: 100 } },
+      positions: {
+        code: "200000",
+        data: [
+          { symbol: "XBTUSDTM", currentQty: 0, avgEntryPrice: 0, unrealisedPnl: 0 },
+          { symbol: "ETHUSDTM", currentQty: 3, avgEntryPrice: 3800, unrealisedPnl: 0 },
+        ],
+      },
+    };
+    const out = parseKucoinAccount(raw);
+    expect(out.positions).toHaveLength(1);
+    expect(out.positions[0].symbol).toBe("ETHUSDTM");
+  });
+
+  it("returns empty positions when positions payload missing", () => {
+    const out = parseKucoinAccount({
+      balance: { code: "200000", data: { accountEquity: 100, availableBalance: 90 } },
+    });
+    expect(out.positions).toEqual([]);
+    expect(out.equity_usd).toBe(100);
+  });
+
+  it("does not throw on missing/null input", () => {
+    expect(() => parseKucoinAccount({})).not.toThrow();
+    expect(() => parseKucoinAccount(null)).not.toThrow();
+    const out = parseKucoinAccount({});
+    expect(out.venue).toBe("kucoin");
+    expect(out.equity_usd).toBe(0);
+    expect(out.positions).toEqual([]);
+  });
+});
+
+describe("parseBybitAccount", () => {
+  it("parses V5 wallet-balance + position/list composite", () => {
+    const raw = {
+      balance: {
+        retCode: 0,
+        retMsg: "OK",
+        result: {
+          list: [
+            {
+              accountType: "UNIFIED",
+              totalEquity: "10000.00",
+              totalAvailableBalance: "8500.00",
+              totalMarginBalance: "9000.00",
+              coin: [{ coin: "USDT", equity: "10000", availableToWithdraw: "8500" }],
+            },
+          ],
+        },
+        time: 1717180800000,
+      },
+      positions: {
+        retCode: 0,
+        result: {
+          list: [
+            {
+              symbol: "BTCUSDT",
+              side: "Buy",
+              size: "0.002",
+              avgPrice: "67120.5",
+              unrealisedPnl: "1.23",
+              markPrice: "67200.0",
+            },
+            {
+              symbol: "ETHUSDT",
+              side: "Sell",
+              size: "0.5",
+              avgPrice: "3800.0",
+              unrealisedPnl: "-2.5",
+              markPrice: "3790.0",
+            },
+          ],
+        },
+      },
+    };
+    const out = parseBybitAccount(raw);
+    expect(out.venue).toBe("bybit");
+    expect(out.equity_usd).toBe(10000.0);
+    expect(out.free_margin_usd).toBe(8500.0);
+    expect(out.positions).toHaveLength(2);
+    expect(out.positions[0]).toMatchObject({
+      symbol: "BTCUSDT",
+      qty: 0.002, // Buy → positive
+      mark_price: 67200.0,
+    });
+    expect(out.positions[1].qty).toBe(-0.5); // Sell → negative
+    expect(out.updated_at).toMatch(/^2024-/);
+  });
+
+  it("falls back to totalMarginBalance when availableBalance absent", () => {
+    const raw = {
+      balance: {
+        retCode: 0,
+        result: { list: [{ totalEquity: "10000", totalMarginBalance: "9500" }] },
+      },
+    };
+    const out = parseBybitAccount(raw);
+    expect(out.free_margin_usd).toBe(9500);
+  });
+
+  it("does NOT fall back when availableBalance is present-and-zero", () => {
+    // Fully-utilized account: real free margin is 0, must not be overstated
+    // by falling back to totalMarginBalance.
+    const raw = {
+      balance: {
+        retCode: 0,
+        result: {
+          list: [{ totalEquity: "10000", totalAvailableBalance: "0", totalMarginBalance: "9500" }],
+        },
+      },
+    };
+    const out = parseBybitAccount(raw);
+    expect(out.free_margin_usd).toBe(0);
+  });
+
+  it("skips a non-zero position with unknown/empty side (no direction guess)", () => {
+    const raw = {
+      balance: { retCode: 0, result: { list: [{ totalEquity: "0" }] } },
+      positions: {
+        retCode: 0,
+        result: {
+          list: [
+            { symbol: "BTCUSDT", side: "", size: "0.5", avgPrice: "67000", unrealisedPnl: "0" },
+            { symbol: "ETHUSDT", side: "Buy", size: "1", avgPrice: "3800", unrealisedPnl: "0" },
+          ],
+        },
+      },
+    };
+    const out = parseBybitAccount(raw);
+    expect(out.positions).toHaveLength(1);
+    expect(out.positions[0].symbol).toBe("ETHUSDT");
+    expect(out.positions[0].qty).toBe(1);
+  });
+
+  it("filters zero-size positions", () => {
+    const raw = {
+      balance: { retCode: 0, result: { list: [{ totalEquity: "0" }] } },
+      positions: {
+        retCode: 0,
+        result: {
+          list: [
+            { symbol: "BTCUSDT", side: "", size: "0", avgPrice: "0", unrealisedPnl: "0" },
+            { symbol: "ETHUSDT", side: "Sell", size: "1", avgPrice: "3800", unrealisedPnl: "-2" },
+          ],
+        },
+      },
+    };
+    const out = parseBybitAccount(raw);
+    expect(out.positions).toHaveLength(1);
+    expect(out.positions[0].symbol).toBe("ETHUSDT");
+    expect(out.positions[0].qty).toBe(-1);
+  });
+
+  it("does not throw on missing/null input", () => {
+    expect(() => parseBybitAccount({})).not.toThrow();
+    expect(() => parseBybitAccount(null)).not.toThrow();
+    const out = parseBybitAccount({});
+    expect(out.venue).toBe("bybit");
+    expect(out.equity_usd).toBe(0);
+    expect(out.positions).toEqual([]);
+  });
+});
+
+describe("parseHyperliquidAccount", () => {
+  it("parses clearinghouseState single payload", () => {
+    const raw = {
+      marginSummary: {
+        accountValue: "10000.0",
+        totalMarginUsed: "1500.0",
+        totalNtlPos: "20000.0",
+      },
+      withdrawable: "8500.0",
+      assetPositions: [
+        {
+          type: "oneWay",
+          position: {
+            coin: "BTC",
+            szi: "0.002",
+            entryPx: "67120.5",
+            positionValue: "134.4",
+            unrealizedPnl: "1.23",
+          },
+        },
+        {
+          type: "oneWay",
+          position: {
+            coin: "ETH",
+            szi: "-0.5",
+            entryPx: "3800.0",
+            positionValue: "1900.0",
+            unrealizedPnl: "-2.5",
+          },
+        },
+      ],
+      time: 1717180800000,
+    };
+    const out = parseHyperliquidAccount(raw);
+    expect(out.venue).toBe("hyperliquid_main");
+    expect(out.equity_usd).toBe(10000.0);
+    expect(out.free_margin_usd).toBe(8500.0);
+    expect(out.positions).toHaveLength(2);
+    expect(out.positions[0]).toMatchObject({
+      symbol: "BTC",
+      qty: 0.002,
+      entry_price: 67120.5,
+      unrealized_pnl: 1.23,
+    });
+    // No mark price on clearinghouseState.
+    expect(out.positions[0].mark_price).toBeUndefined();
+    expect(out.positions[1].qty).toBe(-0.5); // short via signed szi
+    expect(out.updated_at).toMatch(/^2024-/);
+  });
+
+  it("filters zero-szi positions", () => {
+    const raw = {
+      marginSummary: { accountValue: "100" },
+      withdrawable: "90",
+      assetPositions: [
+        { position: { coin: "BTC", szi: "0", entryPx: "0", unrealizedPnl: "0" } },
+        { position: { coin: "ETH", szi: "1", entryPx: "3800", unrealizedPnl: "0" } },
+      ],
+    };
+    const out = parseHyperliquidAccount(raw);
+    expect(out.positions).toHaveLength(1);
+    expect(out.positions[0].symbol).toBe("ETH");
+  });
+
+  it("does not throw on missing/null input", () => {
+    expect(() => parseHyperliquidAccount({})).not.toThrow();
+    expect(() => parseHyperliquidAccount(null)).not.toThrow();
+    const out = parseHyperliquidAccount({});
+    expect(out.venue).toBe("hyperliquid_main");
+    expect(out.equity_usd).toBe(0);
+    expect(out.free_margin_usd).toBe(0);
+    expect(out.positions).toEqual([]);
+    // No time → epoch sentinel.
+    expect(out.updated_at).toBe(new Date(0).toISOString());
   });
 });

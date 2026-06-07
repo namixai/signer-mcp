@@ -75,12 +75,22 @@ describe("list_venues", () => {
     const res = await handleListVenues();
     const body = jsonBodyOf(res);
     expect(body.count).toBe(STATIC_VENUES.length);
+    expect(body.count).toBe(6);
     expect(body.venues.map((v: any) => v.venue)).toEqual([
       "binance",
       "okx",
       "asterdex",
+      "kucoin",
+      "bybit",
+      "hyperliquid_main",
     ]);
     expect(body.venues[0].auth_scheme).toBe("hmac_sha256");
+    // All 6 venues carry the three required manifest fields.
+    for (const v of body.venues) {
+      expect(typeof v.venue).toBe("string");
+      expect(typeof v.asset_class).toBe("string");
+      expect(["hmac_sha256", "eip712", "ed25519"]).toContain(v.auth_scheme);
+    }
   });
 
   it("does not require gateway or token", async () => {
@@ -274,6 +284,49 @@ describe("get_account (Option-A 2-step flow)", () => {
     expect(body.positions[0].symbol).toBe("BTC-USD");
     // Only one fetch — gateway, no signed-request submission needed.
     expect((fetchSpy as any).mock.calls.length).toBe(1);
+  });
+
+  it("hyperliquid_main: gateway signed-request → /info clearinghouseState → parser", async () => {
+    const fetchSpy = routedMockFetch([
+      // Step 1: gateway returns a single signed request for the public /info read
+      {
+        urlIncludes: "signer.test/account/hyperliquid_main",
+        body: {
+          venue: "hyperliquid_main",
+          method: "POST",
+          url: "https://api.hyperliquid.xyz/info",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "clearinghouseState", user: "0xabc" }),
+        },
+      },
+      // Step 2: venue returns the clearinghouseState payload
+      {
+        urlIncludes: "api.hyperliquid.xyz/info",
+        body: {
+          marginSummary: { accountValue: "10000.0" },
+          withdrawable: "8500.0",
+          assetPositions: [
+            { position: { coin: "BTC", szi: "0.002", entryPx: "67120.5", unrealizedPnl: "1.23" } },
+          ],
+          time: 1717180800000,
+        },
+      },
+    ]);
+    const cfg = {
+      gatewayUrl: "https://signer.test",
+      apiToken: "sk_test_abc",
+      fetchImpl: fetchSpy,
+    };
+    const res = await handleGetAccount(cfg, { venue: "hyperliquid_main" }, getAccountParser);
+    expect(res.isError).toBeUndefined();
+    const body = jsonBodyOf(res);
+    expect(body.venue).toBe("hyperliquid_main");
+    expect(body.equity_usd).toBe(10000);
+    expect(body.free_margin_usd).toBe(8500);
+    expect(body.positions[0].symbol).toBe("BTC");
+    // gateway + venue = 2 fetches
+    expect((fetchSpy as any).mock.calls.length).toBe(2);
+    expect((fetchSpy as any).mock.calls[1][0]).toContain("api.hyperliquid.xyz");
   });
 });
 

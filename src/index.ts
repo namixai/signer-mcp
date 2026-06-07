@@ -126,8 +126,9 @@ const TickerSchema = z
   .max(32)
   .regex(/^[A-Z0-9_-]+$/, "Use venue-native symbol format (no slash)")
   .describe(
-    "Venue-native trading symbol. Examples: BTCUSDT (binance), " +
-      "BTC-USDT-SWAP (okx), BTC-USD (asterdex). Case-sensitive.",
+    "Venue-native trading symbol. Examples: BTCUSDT (binance, bybit), " +
+      "BTC-USDT-SWAP (okx), BTC-USD (asterdex), XBTUSDTM (kucoin futures), " +
+      "BTC (hyperliquid_main). Case-sensitive.",
   );
 
 const OrderSideSchema = z
