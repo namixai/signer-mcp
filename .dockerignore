@@ -1,0 +1,14 @@
+# Keep the build context small + deterministic. node_modules/dist are rebuilt
+# inside the image; tests/docs aren't needed at runtime.
+node_modules
+dist
+tests
+docs
+*.log
+.git
+.github
+.npmignore
+.gitignore
+CHANGELOG.md
+README.md
+vitest.config.ts
