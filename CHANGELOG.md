@@ -7,6 +7,22 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 ### Added
 - (placeholder)
 
+## [0.2.3] - 2026-06-10
+
+### Fixed
+- **`get_account okx` returned $0 for everyone (composite legs never executed):**
+  the gateway's composite `/account/okx` response nests `balance`/`positions`
+  legs WITHOUT a `venue` field (it lives once on the parent), but the composite
+  walker only executed legs that passed the strict `isSignedRequest` check
+  (venue required). The legs were silently treated as pass-through fields and
+  never fetched; the parser then received raw unexecuted `{method,url,headers}`
+  objects and normalized them to a fabricated `$0 / 1970` balance. The walker
+  now recognizes inner legs by shape (`{method,url,headers}`) and injects the
+  parent bundle's `venue` for error labels. Top-level requests keep the strict
+  venue check. A failed (blocked/4xx) leg surfaces an error per the 0.2.2 #136
+  guard — it is never rendered as $0. The unit-test fixture that codified the
+  wrong composite shape (inner `venue` present) now mirrors the real gateway.
+
 ## [0.2.2] - 2026-06-10
 
 ### Fixed

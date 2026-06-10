@@ -5,7 +5,7 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.2.2";
+export const PACKAGE_VERSION = "0.2.3";
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 // Venues that have a structured order/cancel route on the gateway
@@ -244,6 +244,32 @@ function isSignedRequest(x: unknown): x is SignedRequest {
 }
 
 /**
+ * Bug 0.2.3: recognize a composite bundle's INNER leg by shape alone.
+ *
+ * The gateway's composite `/account/okx` response is
+ * `{venue:"okx", balance:{method,url,headers}, positions:{method,url,headers}}` —
+ * the inner legs carry NO `venue` (it lives once on the parent). The old walker
+ * filtered legs with the strict `isSignedRequest` (venue required), so the legs
+ * were silently treated as pass-through fields and NEVER fetched → the parser got
+ * raw unexecuted requests → fabricated $0. Top-level requests keep the strict
+ * check; composite children are recognized by `{method,url,headers}` shape and
+ * get the parent's `venue` injected for error labels.
+ */
+function isExecutableLeg(x: unknown): x is Omit<SignedRequest, "venue"> & { venue?: string } {
+  if (x === null || typeof x !== "object") return false;
+  const obj = x as Record<string, unknown>;
+  return (
+    typeof obj.method === "string" &&
+    ["GET", "POST", "DELETE"].includes(obj.method) &&
+    typeof obj.url === "string" &&
+    obj.url.length > 0 &&
+    obj.headers !== null &&
+    typeof obj.headers === "object" &&
+    !Array.isArray(obj.headers)
+  );
+}
+
+/**
  * Submit a single signed request to a venue and return parsed JSON (or text
  * if the response isn't JSON). Errors include the venue endpoint + status so
  * the agent can reason about which side failed.
@@ -314,22 +340,31 @@ export async function submitSignedBundle(
   }
   const obj = bundle as Record<string, unknown>;
   const entries = Object.entries(obj);
-  const requests = entries.filter(([, v]) => isSignedRequest(v));
+  // Recognize inner legs by SHAPE ({method,url,headers}) — gateway composite
+  // legs carry no `venue` (it lives on the parent), so the strict
+  // isSignedRequest check must not gate them (0.2.3 bug: legs never executed).
+  const requests = entries.filter(([, v]) => isExecutableLeg(v));
   if (requests.length === 0) {
     // No signed requests at all — pass through (e.g. asterdex indexer
     // payload may be returned directly by the gateway, not as a signed req).
     return obj;
   }
+  const parentVenue = typeof obj.venue === "string" ? obj.venue : "composite";
   const results = await Promise.all(
     requests.map(async ([key, req]) => {
-      const resp = await submitSignedRequest(req as SignedRequest, fetchImpl, timeoutMs);
+      const leg = req as Omit<SignedRequest, "venue"> & { venue?: string };
+      const withVenue: SignedRequest = {
+        ...leg,
+        venue: typeof leg.venue === "string" ? leg.venue : parentVenue,
+      };
+      const resp = await submitSignedRequest(withVenue, fetchImpl, timeoutMs);
       return [key, resp] as const;
     }),
   );
   const out: Record<string, unknown> = {};
   // Preserve any non-request fields (e.g. venue label).
   for (const [k, v] of entries) {
-    if (!isSignedRequest(v)) out[k] = v;
+    if (!isExecutableLeg(v)) out[k] = v;
   }
   for (const [k, v] of results) out[k] = v;
   return out;
