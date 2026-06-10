@@ -195,19 +195,20 @@ describe("get_account (Option-A 2-step flow)", () => {
 
   it("okx: composite balance+positions bundle → 3 fetches (gateway + 2 venue)", async () => {
     const fetchSpy = routedMockFetch([
-      // Step 1: gateway returns composite signed-request bundle
+      // Step 1: gateway returns composite signed-request bundle.
+      // REAL gateway shape (0.2.3 bug): inner legs carry NO `venue` — it lives
+      // once on the parent. The old fixture put `venue` on the legs, so the
+      // test passed while production silently skipped both legs → $0.
       {
         urlIncludes: "signer.test/account/okx",
         body: {
           venue: "okx",
           balance: {
-            venue: "okx",
             method: "GET",
             url: "https://www.okx.com/api/v5/account/balance",
             headers: { "OK-ACCESS-KEY": "k" },
           },
           positions: {
-            venue: "okx",
             method: "GET",
             url: "https://www.okx.com/api/v5/account/positions",
             headers: { "OK-ACCESS-KEY": "k" },
@@ -235,10 +236,52 @@ describe("get_account (Option-A 2-step flow)", () => {
     expect(res.isError).toBeUndefined();
     const body = jsonBodyOf(res);
     expect(body.venue).toBe("okx");
+    // Non-zero balance proves the legs were EXECUTED and normalized — the
+    // 0.2.3 regression rendered $0 here because the legs never ran.
     expect(body.equity_usd).toBe(10000);
     expect(body.free_margin_usd).toBe(8000);
     expect(body.positions[0].symbol).toBe("BTC-USDT-SWAP");
     expect((fetchSpy as any).mock.calls.length).toBe(3);
+  });
+
+  it("okx: a blocked composite leg surfaces an error — never $0 (0.2.3 + #136)", async () => {
+    const fetchSpy = routedMockFetch([
+      {
+        urlIncludes: "signer.test/account/okx",
+        body: {
+          venue: "okx",
+          balance: {
+            method: "GET",
+            url: "https://www.okx.com/api/v5/account/balance",
+            headers: { "OK-ACCESS-KEY": "k" },
+          },
+          positions: {
+            method: "GET",
+            url: "https://www.okx.com/api/v5/account/positions",
+            headers: { "OK-ACCESS-KEY": "k" },
+          },
+        },
+      },
+      // Balance leg blocked at the exchange edge (Cloudflare 403).
+      {
+        urlIncludes: "/account/balance",
+        body: "error code: 1010",
+        status: 403,
+      },
+      {
+        urlIncludes: "/account/positions",
+        body: { code: "0", data: [] },
+      },
+    ]);
+    const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
+    const res = await handleGetAccount(cfg, { venue: "okx" }, getAccountParser);
+    expect(res.isError).toBe(true);
+    const err = jsonBodyOf(res).error as string;
+    expect(err).toContain("403");
+    // Pin the parent-venue INJECTION specifically — "venue okx" can only come
+    // from the injected label ("okx" alone would also match the leg URL).
+    expect(err).toContain("venue okx");
+    expect(err).not.toContain("equity_usd");
   });
 
   it("surfaces gateway error before attempting venue fetch", async () => {

@@ -61,6 +61,22 @@ export const parseOkxAccount: AccountParser = (raw): NormalizedAccount => {
         `or was blocked at the edge, not an empty account. Got: ${String(balRaw).slice(0, 160)}`,
     );
   }
+  // Same fabrication class, different vector (0.2.3 hardening): a RAW
+  // unexecuted signed-request ({method,url,headers}) reaching the parser must
+  // never normalize to $0 — it means a composite leg was recognized as
+  // pass-through instead of being executed.
+  const balObj = balRaw as Record<string, unknown>;
+  if (
+    typeof balObj.method === "string" &&
+    typeof balObj.url === "string" &&
+    balObj.code === undefined &&
+    balObj.data === undefined
+  ) {
+    throw new Error(
+      "OKX balance leg was never executed (raw signed-request reached the parser) — " +
+        "client bug, not an empty account. Report this; do not trust a $0 reading.",
+    );
+  }
   const balCode = (balRaw as Record<string, unknown>).code;
   if (balCode !== undefined && String(balCode) !== "0") {
     throw new Error(

@@ -216,6 +216,13 @@ describe("parseOkxAccount", () => {
     expect(() => parseOkxAccount({ balance: { code: "50111", msg: "Invalid Sign" } })).toThrow(
       /error code 50111/i,
     );
+    // 0.2.3 hardening: a RAW unexecuted signed-request reaching the parser
+    // (composite leg mistakenly passed through) → error, never $0.
+    expect(() =>
+      parseOkxAccount({
+        balance: { method: "GET", url: "https://www.okx.com/api/v5/account/balance", headers: null },
+      }),
+    ).toThrow(/never executed/i);
   });
 
   it("still parses a genuine OKX success (code 0)", () => {
