@@ -7,6 +7,15 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 ### Added
 - (placeholder)
 
+## [0.2.1] - 2026-06-10
+
+### Fixed
+- Send a browser-like `User-Agent` when the client executes a signed request
+  against an exchange. OKX's Cloudflare edge rejects non-browser User-Agents
+  with HTTP 403 "error code: 1010" before the request reaches the API; the
+  gateway is sign-only, so the client controls this UA. Binance is unaffected.
+  Signed venue headers still take precedence over the default UA.
+
 ### Changed
 - (placeholder)
 
