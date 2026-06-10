@@ -5,8 +5,14 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.2.1";
+export const PACKAGE_VERSION = "0.2.2";
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+// Venues that have a structured order/cancel route on the gateway
+// (`/sign/<venue>-order`, `/sign/<venue>-cancel`). Only binance + okx in v0;
+// other venues currently expose read-only account access. place_order /
+// cancel_order on anything else returns a clear error instead of a 404.
+export const STRUCTURED_ORDER_VENUES = new Set(["binance", "okx"]);
 
 // Some exchange edges (notably OKX, behind Cloudflare) reject requests whose
 // User-Agent looks non-browser ("Python-urllib/*", some default agents) with
@@ -270,8 +276,15 @@ export async function submitSignedRequest(
     try {
       return JSON.parse(text);
     } catch {
-      // Some venues return non-JSON on success (rare). Pass through as string.
-      return text;
+      // Bug #136: a non-JSON body from a JSON exchange API is almost always a
+      // block/error page (Cloudflare challenge, geo-block, WAF) — NOT a valid
+      // response. Surface it so callers never fabricate a $0 balance from junk.
+      // (All venues we execute against today return JSON; revisit if that changes.)
+      throw new Error(
+        `venue ${req.venue} ${req.method} ${req.url.split("?")[0]} returned a non-JSON ` +
+          `response (HTTP ${res.status}) — likely blocked at the exchange edge ` +
+          `(geo/UA/WAF), not an empty account. Body: ${text.slice(0, 200)}`,
+      );
     }
   } finally {
     clearTimeout(timer);
@@ -400,15 +413,34 @@ export async function handlePlaceOrder(
   }
   // type=market with price set is NOT rejected — some venues silently ignore,
   // others use as limit-on-fail. We pass through so the venue decides.
+  const venue = args.venue.toLowerCase();
+  if (!STRUCTURED_ORDER_VENUES.has(venue)) {
+    return toolError(
+      `place_order is only available for ${[...STRUCTURED_ORDER_VENUES].join(", ")} ` +
+        `in this signer (v0). "${args.venue}" has no structured order route yet.`,
+    );
+  }
   try {
-    // Per CTO 2026-05-31T2240 decision: PER-VENUE endpoints (not a generic
-    // /sign/order). Each venue puts policy-relevant fields (symbol/qty/side)
-    // in a different location — Binance in query string, OKX in JSON body,
-    // Asterdex inside the EIP-712 message. Per-venue handlers enforce policy
-    // on the actual fields; a generic endpoint would muddy that.
+    // Gateway contract (proto.rs SignBinanceOrderRequest / SignOkxOrderRequest):
+    //   { key_id, order: { symbol, side, qty, ord_type, price?, reduce_only } }
+    // - key_id selects the venue-keyed blob (binance.enc / okx.enc). This is the
+    //   SINGLE mapping point that becomes customer-scoped in multi-tenant (#132).
+    // - qty/price are STRINGS in OrderParams; tool input `type` → gateway `ord_type`;
+    //   `price` is omitted for market orders (gateway field is optional).
+    const body = {
+      key_id: venue,
+      order: {
+        symbol: args.symbol,
+        side: args.side,
+        qty: String(args.qty),
+        ord_type: args.type,
+        ...(args.price !== undefined ? { price: String(args.price) } : {}),
+        reduce_only: false,
+      },
+    };
     const signed = await callGateway<unknown>(
-      `/sign/${encodeURIComponent(args.venue)}-order`,
-      { method: "POST", body: args, authRequired: true },
+      `/sign/${venue}-order`,
+      { method: "POST", body, authRequired: true },
       cfg,
     );
     const venueResponse = await submitSignedBundle(signed, cfg.fetchImpl, cfg.fetchTimeoutMs);
@@ -434,17 +466,28 @@ export async function handleCancelOrder(
   // forwarding a symbolless request that the gateway rejects with an opaque
   // `bad_request` (signer #83 follow-up).
   const venue = args.venue.toLowerCase();
-  if ((venue === "binance" || venue === "okx") && !args.symbol) {
+  if (!STRUCTURED_ORDER_VENUES.has(venue)) {
+    return toolError(
+      `cancel_order is only available for ${[...STRUCTURED_ORDER_VENUES].join(", ")} ` +
+        `in this signer (v0). "${args.venue}" has no structured cancel route yet.`,
+    );
+  }
+  if (!args.symbol) {
     return toolError(
       `cancel_order on "${args.venue}" requires "symbol" — its cancel REST route ` +
         `needs the venue-native symbol (e.g. BTCUSDT) alongside order_id.`,
     );
   }
   try {
-    // Per-venue endpoint per CTO decision (same rationale as place_order).
+    // Gateway contract (proto.rs SignBinanceCancelRequest / SignOkxCancelRequest):
+    //   { key_id, cancel: { symbol, order_id } }  — same key_id mapping as place_order.
+    const body = {
+      key_id: venue,
+      cancel: { symbol: args.symbol, order_id: args.order_id },
+    };
     const signed = await callGateway<unknown>(
-      `/sign/${encodeURIComponent(args.venue)}-cancel`,
-      { method: "POST", body: args, authRequired: true },
+      `/sign/${venue}-cancel`,
+      { method: "POST", body, authRequired: true },
       cfg,
     );
     const venueResponse = await submitSignedBundle(signed, cfg.fetchImpl, cfg.fetchTimeoutMs);

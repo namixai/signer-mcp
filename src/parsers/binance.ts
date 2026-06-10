@@ -49,6 +49,14 @@ function toIso(updateTime: unknown): string {
 
 export const parseBinanceAccount: AccountParser = (raw): NormalizedAccount => {
   const obj = (raw as Record<string, unknown>) ?? {};
+  // Bug #136: Binance error responses are `{ code: <negative>, msg }`. A success
+  // account snapshot has no top-level numeric `code`. Surface the error instead
+  // of fabricating a $0 balance from a response that has no balance fields.
+  if (typeof obj.code === "number" && obj.code < 0) {
+    throw new Error(
+      `Binance returned error code ${obj.code}: ${String(obj.msg ?? "").slice(0, 160)}`,
+    );
+  }
   const positionsRaw = Array.isArray(obj.positions) ? obj.positions : [];
 
   const positions: NormalizedPosition[] = positionsRaw

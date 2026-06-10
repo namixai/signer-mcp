@@ -370,7 +370,8 @@ describe("place_order", () => {
     const call = (fetchSpy as any).mock.calls[0];
     expect(call[1].method).toBe("POST");
     const sentBody = JSON.parse(call[1].body);
-    expect(sentBody.price).toBe(67000);
+    // Gateway contract: price lives under `order` and is a STRING.
+    expect(sentBody.order.price).toBe("67000");
   });
 
   it("auth required — fails fast without token", async () => {
@@ -389,7 +390,7 @@ describe("place_order", () => {
     expect(jsonBodyOf(res).error).toContain("SIGNER_API_TOKEN is required");
   });
 
-  it("POSTs to /sign/<venue>-order with full body (per-venue endpoint pattern)", async () => {
+  it("POSTs to /sign/<venue>-order with the gateway contract body {key_id, order}", async () => {
     const fetchSpy = mockFetch({ order_id: "binance_42", status: "FILLED" });
     const cfg = {
       gatewayUrl: "https://signer.test",
@@ -401,24 +402,72 @@ describe("place_order", () => {
       symbol: "BTCUSDT",
       side: "buy",
       qty: 0.001,
-      type: "market",
+      type: "limit",
+      price: 67000,
       policy_id: "custom-policy",
     });
     expect(res.isError).toBeUndefined();
     const call = (fetchSpy as any).mock.calls[0];
-    // CTO 2026-05-31T2240 decision: per-venue endpoints
     expect(call[0]).toBe("https://signer.test/sign/binance-order");
     expect(call[1].method).toBe("POST");
     expect(call[1].headers["Content-Type"]).toBe("application/json");
     const body = JSON.parse(call[1].body);
-    expect(body).toMatchObject({
-      venue: "binance",
-      symbol: "BTCUSDT",
-      side: "buy",
-      qty: 0.001,
-      type: "market",
-      policy_id: "custom-policy",
+    // Gateway proto.rs SignBinanceOrderRequest { key_id, order: OrderParams }.
+    // qty/price are STRINGS; tool `type` → `ord_type`; flat fields (venue, type,
+    // policy_id) are NOT sent — that was the 422 "missing field key_id" bug.
+    expect(body).toEqual({
+      key_id: "binance",
+      order: {
+        symbol: "BTCUSDT",
+        side: "buy",
+        qty: "0.001",
+        ord_type: "limit",
+        price: "67000",
+        reduce_only: false,
+      },
     });
+    expect(body.venue).toBeUndefined();
+    expect(body.policy_id).toBeUndefined();
+  });
+
+  it("omits price for market orders in the {key_id, order} body", async () => {
+    const fetchSpy = mockFetch({ order_id: "okx_7" });
+    const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
+    const res = await handlePlaceOrder(cfg, {
+      venue: "okx",
+      symbol: "BTC-USDT-SWAP",
+      side: "sell",
+      qty: 0.01,
+      type: "market",
+    });
+    expect(res.isError).toBeUndefined();
+    const call = (fetchSpy as any).mock.calls[0];
+    expect(call[0]).toBe("https://signer.test/sign/okx-order");
+    const body = JSON.parse(call[1].body);
+    expect(body.key_id).toBe("okx");
+    expect(body.order).toEqual({
+      symbol: "BTC-USDT-SWAP",
+      side: "sell",
+      qty: "0.01",
+      ord_type: "market",
+      reduce_only: false,
+    });
+    expect("price" in body.order).toBe(false);
+  });
+
+  it("returns a clear error for place_order on a venue without a structured route", async () => {
+    const fetchSpy = mockFetch({});
+    const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
+    const res = await handlePlaceOrder(cfg, {
+      venue: "kucoin",
+      symbol: "XBTUSDTM",
+      side: "buy",
+      qty: 0.01,
+      type: "market",
+    });
+    expect(res.isError).toBe(true);
+    expect(jsonBodyOf(res).error).toContain("only available for");
+    expect((fetchSpy as any).mock.calls.length).toBe(0);
   });
 
   it("surfaces gateway 4xx as toolError without crashing", async () => {
@@ -459,10 +508,10 @@ describe("cancel_order", () => {
     expect(res.isError).toBeUndefined();
     const call = (fetchSpy as any).mock.calls[0];
     expect(call[0]).toBe("https://signer.test/sign/okx-cancel");
+    // Gateway proto.rs SignOkxCancelRequest { key_id, cancel: CancelParams }.
     expect(JSON.parse(call[1].body)).toEqual({
-      venue: "okx",
-      order_id: "OKX-123",
-      symbol: "BTC-USDT",
+      key_id: "okx",
+      cancel: { symbol: "BTC-USDT", order_id: "OKX-123" },
     });
   });
 
