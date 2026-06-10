@@ -7,6 +7,24 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 ### Added
 - (placeholder)
 
+## [0.2.2] - 2026-06-10
+
+### Fixed
+- **place_order / cancel_order contract mismatch (highest):** the client sent the
+  flat MCP tool input as the gateway body, but the gateway expects
+  `{ key_id, order: { symbol, side, qty, ord_type, price?, reduce_only } }` (and
+  `{ key_id, cancel: { symbol, order_id } }` for cancel) → every order failed with
+  HTTP 422 "missing field `key_id`". Client now builds the correct per-venue body:
+  `key_id` = venue id (venue-keyed blobs), `qty`/`price` as strings, tool `type` →
+  `ord_type`, `price` omitted for market. binance + okx only (the venues with
+  structured order routes); other venues return a clear error instead of a 404.
+- **silent $0 on failed exchange execute (bug #136):** when a signed request to a
+  venue came back non-JSON (Cloudflare/geo/WAF block page), the client returned a
+  fabricated `$0 / updated_at 1970` balance instead of an error. `submitSignedRequest`
+  now throws on non-JSON bodies, and the OKX/Binance parsers throw on venue error
+  responses (OKX `code != "0"`, Binance negative `code`). A blocked OKX leg now
+  surfaces a clear error to the model, never a fake zero balance.
+
 ## [0.2.1] - 2026-06-10
 
 ### Fixed

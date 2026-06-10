@@ -206,9 +206,23 @@ describe("parseOkxAccount", () => {
     expect(out.positions[0].qty).toBe(-1);
   });
 
-  it("does not throw on completely missing input", () => {
-    expect(() => parseOkxAccount({})).not.toThrow();
-    expect(() => parseOkxAccount(null)).not.toThrow();
+  it("THROWS on missing/blocked balance instead of fabricating $0 (bug #136)", () => {
+    // A blocked/empty execute must surface as an error, never a fake zero balance.
+    expect(() => parseOkxAccount({})).toThrow(/balance response missing/i);
+    expect(() => parseOkxAccount(null)).toThrow(/balance response missing/i);
+    // Non-JSON string leg (e.g. a Cloudflare block page) → error, not $0.
+    expect(() => parseOkxAccount({ balance: "<html>Attention Required</html>" })).toThrow();
+    // OKX error code → surfaced.
+    expect(() => parseOkxAccount({ balance: { code: "50111", msg: "Invalid Sign" } })).toThrow(
+      /error code 50111/i,
+    );
+  });
+
+  it("still parses a genuine OKX success (code 0)", () => {
+    const out = parseOkxAccount({
+      balance: { code: "0", data: [{ totalEq: "75811", details: [] }] },
+    });
+    expect(out.equity_usd).toBe(75811);
   });
 });
 

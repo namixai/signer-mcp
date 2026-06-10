@@ -52,6 +52,22 @@ function unwrapOkxArray(payload: unknown): Record<string, unknown> | null {
 
 export const parseOkxAccount: AccountParser = (raw): NormalizedAccount => {
   const wrap = (raw as Record<string, unknown>) ?? {};
+  // Bug #136: a failed/blocked OKX execute must surface as an error, never as a
+  // fabricated $0 balance. Validate the balance leg is a real OKX success first.
+  const balRaw = wrap.balance;
+  if (balRaw === undefined || balRaw === null || typeof balRaw !== "object") {
+    throw new Error(
+      `OKX balance response missing or non-JSON — the exchange call likely failed ` +
+        `or was blocked at the edge, not an empty account. Got: ${String(balRaw).slice(0, 160)}`,
+    );
+  }
+  const balCode = (balRaw as Record<string, unknown>).code;
+  if (balCode !== undefined && String(balCode) !== "0") {
+    throw new Error(
+      `OKX returned error code ${String(balCode)}: ` +
+        `${String((balRaw as Record<string, unknown>).msg ?? "").slice(0, 160)}`,
+    );
+  }
   const balanceWrap = unwrapOkxArray(wrap.balance);
   const positionsWrap = wrap.positions as Record<string, unknown> | undefined;
 
