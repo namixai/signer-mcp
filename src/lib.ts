@@ -5,8 +5,18 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.2.0";
+export const PACKAGE_VERSION = "0.2.1";
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+// Some exchange edges (notably OKX, behind Cloudflare) reject requests whose
+// User-Agent looks non-browser ("Python-urllib/*", some default agents) with
+// HTTP 403 "error code: 1010" — BEFORE the request reaches the exchange API.
+// The signer gateway is sign-only; the *client* executes the signed request,
+// so the UA on that fetch is ours to set. A realistic browser UA avoids the
+// edge block. Binance is unaffected; this is harmless there.
+export const EXCHANGE_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 // ── Venue manifest (v0 static) ──
 export interface VenueEntry {
@@ -243,7 +253,9 @@ export async function submitSignedRequest(
   try {
     const res = await fetchFn(req.url, {
       method: req.method,
-      headers: req.headers,
+      // Browser-like UA first so exchange edges (OKX/Cloudflare) don't 1010 us;
+      // spread signed headers AFTER so a venue-supplied header always wins.
+      headers: { "User-Agent": EXCHANGE_USER_AGENT, ...req.headers },
       body: req.body,
       signal: controller.signal,
     });
