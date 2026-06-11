@@ -201,6 +201,10 @@ export function toNativeQty(
     );
   }
   if (venue !== "okx") {
+    // Float artifacts ("0.30000000000000004") ARE plain decimals — gate them
+    // with the same ≤8-decimal-places rule as the contracts path. No crypto
+    // perp sizes base qty finer than 1e-8; a 16-digit fraction is an artifact.
+    toScaledInt(qtyStr, 8);
     return { nativeQty: qtyStr, nativeUnit: "base" };
   }
   const spec = OKX_SWAP_SPECS[nativeSymbol];
@@ -242,7 +246,17 @@ export function toNativeQty(
         `Refusing to round silently.`,
     );
   }
-  const contractsInt = Math.round((qtyInt / ctValInt) * 10 ** SCALE); // scaled contracts
+  // Exact integer arithmetic only: qtyInt is a verified multiple of
+  // stepBaseInt, so k (number of lot steps) is an exact integer, and
+  // contractsInt = k * lotInt needs no float division or rounding at all.
+  const k = qtyInt / stepBaseInt;
+  const contractsInt = k * lotInt; // scaled contracts
+  if (!Number.isSafeInteger(contractsInt)) {
+    throw new NormalizationError(
+      `okx ${nativeSymbol}: ${qtyBase} base converts to a contract count too ` +
+        `large to represent safely — refusing to size.`,
+    );
+  }
   if (contractsInt < minInt) {
     throw new NormalizationError(
       `okx ${nativeSymbol}: ${qtyBase} base = ${fromScaledInt(contractsInt, SCALE)} contracts, ` +

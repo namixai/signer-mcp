@@ -125,6 +125,13 @@ describe("toNativeQty (okx contracts conversion)", () => {
     });
   });
 
+  it("rejects float-artifact qty on base-unit venues too (0.1+0.2 → binance)", () => {
+    expect(() => toNativeQty("binance", "BTCUSDT", 0.1 + 0.2)).toThrow(
+      NormalizationError,
+    );
+    expect(toNativeQty("binance", "BTCUSDT", 0.3).nativeQty).toBe("0.3");
+  });
+
   it("rejects exponent-form qty on EVERY venue — '1e-7' must never hit a wire", () => {
     expect(() => toNativeQty("binance", "BTCUSDT", 1e-7)).toThrow(
       /plain decimal/,
