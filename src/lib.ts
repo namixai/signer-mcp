@@ -462,8 +462,12 @@ export async function handlePlaceOrder(
   let nativeSymbol: string;
   let nativeQty: string;
   let echo: OrderTranslation;
+  let wirePrice: string | undefined;
   try {
     ({ nativeSymbol, nativeQty, echo } = translateOrder(venue, args.symbol, args.qty));
+    // Same plain-decimal gate as qty: an exponent-form price ("5e-7") signs
+    // fine (enclave alphabet allows e/-) and only dies at the exchange.
+    wirePrice = args.price !== undefined ? priceToWire(args.price) : undefined;
   } catch (err) {
     if (err instanceof NormalizationError) return toolError(err.message);
     throw err;
@@ -483,7 +487,7 @@ export async function handlePlaceOrder(
         side: args.side,
         qty: nativeQty,
         ord_type: args.type,
-        ...(args.price !== undefined ? { price: String(args.price) } : {}),
+        ...(wirePrice !== undefined ? { price: wirePrice } : {}),
         reduce_only: false,
       },
     };
@@ -506,8 +510,8 @@ export interface HedgeLegInput {
   symbol: string;
   side: "buy" | "sell";
   qty: number;
-  type: "market" | "limit";
-  price?: number;
+  /** v1: market only — a resting limit leg would make "executed" lie. */
+  type: "market";
 }
 
 export interface PlaceHedgeInput {
@@ -548,8 +552,13 @@ export async function handlePlaceHedge(
           `structured order route yet.`,
       );
     }
-    if (leg.type === "limit" && leg.price === undefined) {
-      return toolError(`leg ${i + 1}: price is required when type=limit`);
+    // v1 is market-only (mirrors the gateway's validation): a resting GTC
+    // limit leg would let status="executed" hide an unfilled leg.
+    if (leg.type !== "market") {
+      return toolError(
+        `leg ${i + 1}: place_hedge is market-only in v1 (got type=${String(leg.type)}).`,
+        "Use place_order for limit orders.",
+      );
     }
     let nativeSymbol: string;
     let nativeQty: string;
@@ -569,8 +578,7 @@ export async function handlePlaceHedge(
         symbol: nativeSymbol,
         side: leg.side,
         qty: nativeQty,
-        ord_type: leg.type,
-        ...(leg.price !== undefined ? { price: String(leg.price) } : {}),
+        ord_type: "market",
         reduce_only: false,
       },
     });
@@ -585,11 +593,25 @@ export async function handlePlaceHedge(
       ...((result ?? {}) as Record<string, unknown>),
       translations,
     };
-    // A partial hedge is a NAKED position — make it impossible to miss.
+    // Per-leg outcomes: ok | rejected | unknown. The distinction matters
+    // with real money — "unknown" (timeout/5xx, receipt lost) may be a LIVE
+    // order, and a blind retry would double the position.
     if (result?.status === "partial") {
       out.warning =
-        "PARTIAL HEDGE: exactly one leg executed — the position is NAKED. " +
-        "Inspect legs[].ok and repair (close the live leg or retry the dead one).";
+        "PARTIAL HEDGE: exactly one leg is live — the position is NAKED. " +
+        "Repair by closing the live leg or re-placing the leg whose outcome " +
+        "is 'rejected'. NEVER re-place a leg whose outcome is 'unknown' — " +
+        "query its state first (get_account / order lookup).";
+    } else if (result?.status === "unknown") {
+      out.warning =
+        "EXECUTION STATE UNKNOWN: at least one leg's receipt was lost " +
+        "(timeout / venue 5xx) — that order MAY BE LIVE on the exchange. " +
+        "Do NOT retry place_hedge. Reconcile first: get_account on both " +
+        "venues, find the order, then close or complete the hedge manually.";
+    } else if (result?.status === "failed") {
+      out.warning =
+        "Both legs were definitively rejected by the venues — nothing is " +
+        "live. Safe to fix the inputs and retry.";
     }
     return toolJson(out);
   } catch (err) {
@@ -600,7 +622,14 @@ export async function handlePlaceHedge(
         "Use two place_order calls until the gateway is upgraded.",
       );
     }
-    return toolError(e.message);
+    // The gateway accepted the request but the response never made it back
+    // (network drop, our 30s abort, gateway 408/502). Orders MAY be live.
+    return toolError(
+      e.message,
+      "place_hedge state is UNKNOWN: the gateway may have executed one or " +
+        "both legs. Do NOT blindly retry — check get_account on both venues " +
+        "and reconcile open orders/positions first.",
+    );
   }
 }
 
@@ -667,12 +696,14 @@ export type { AccountParser };
 
 import {
   NormalizationError,
+  priceToWire,
   toNativeSymbol,
   translateOrder,
   type OrderTranslation,
 } from "./normalize.js";
 export {
   NormalizationError,
+  priceToWire,
   toNativeSymbol,
   translateOrder,
   canonicalBase,

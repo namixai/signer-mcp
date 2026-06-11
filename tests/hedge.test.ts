@@ -104,7 +104,7 @@ describe("place_hedge", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("rejects unsupported venues + limit-without-price BEFORE the gateway", async () => {
+  it("rejects unsupported venues + non-market legs BEFORE the gateway", async () => {
     const fetchSpy = mockFetch({});
     const badVenue = await handlePlaceHedge(CFG(fetchSpy), {
       legs: [
@@ -114,14 +114,14 @@ describe("place_hedge", () => {
     });
     expect(badVenue.isError).toBe(true);
     expect(jsonBodyOf(badVenue).error).toContain("leg 1");
-    const noPrice = await handlePlaceHedge(CFG(fetchSpy), {
+    const limitLeg = await handlePlaceHedge(CFG(fetchSpy), {
       legs: [
-        { ...BTC_HEDGE.legs[0], type: "limit" as const },
+        { ...BTC_HEDGE.legs[0], type: "limit" as never },
         BTC_HEDGE.legs[1],
       ],
     });
-    expect(noPrice.isError).toBe(true);
-    expect(jsonBodyOf(noPrice).error).toContain("price is required");
+    expect(limitLeg.isError).toBe(true);
+    expect(jsonBodyOf(limitLeg).error).toContain("market-only");
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -153,6 +153,44 @@ describe("place_hedge", () => {
     const out = jsonBodyOf(res);
     expect(out.status).toBe("partial");
     expect(out.warning).toContain("NAKED");
+  });
+
+  it("status=unknown forbids blind retry and demands reconciliation", async () => {
+    const fetchSpy = mockFetch({
+      status: "unknown",
+      legs: [
+        { venue: "binance", ok: true, outcome: "ok" },
+        { venue: "okx", ok: false, outcome: "unknown" },
+      ],
+      sign_ms: 10,
+      exec_ms: 10050,
+    });
+    const res = await handlePlaceHedge(CFG(fetchSpy), BTC_HEDGE);
+    const out = jsonBodyOf(res);
+    expect(out.status).toBe("unknown");
+    expect(out.warning).toContain("MAY BE LIVE");
+    expect(out.warning).toContain("Do NOT retry");
+  });
+
+  it("status=failed says retry is safe", async () => {
+    const fetchSpy = mockFetch({
+      status: "failed",
+      legs: [
+        { venue: "binance", ok: false, outcome: "rejected" },
+        { venue: "okx", ok: false, outcome: "rejected" },
+      ],
+      sign_ms: 10,
+      exec_ms: 300,
+    });
+    const out = jsonBodyOf(await handlePlaceHedge(CFG(fetchSpy), BTC_HEDGE));
+    expect(out.warning).toContain("Safe to fix the inputs and retry");
+  });
+
+  it("transport/gateway errors carry the orders-may-be-live hint", async () => {
+    const fetchSpy = mockFetch(undefined, { status: 502, bodyAsText: "bad gateway" });
+    const res = await handlePlaceHedge(CFG(fetchSpy), BTC_HEDGE);
+    expect(res.isError).toBe(true);
+    expect(jsonBodyOf(res).hint).toContain("Do NOT blindly retry");
   });
 
   it("maps a 404 (old gateway) to a clear upgrade hint", async () => {

@@ -112,14 +112,17 @@ const DESC_PLACE_ORDER =
   "depending on venue env.";
 
 const DESC_PLACE_HEDGE =
-  "Place a 2-leg hedge ATOMICALLY: both legs are signed inside the enclave " +
-  "(if either leg fails policy, NOTHING executes), then the gateway fires " +
-  "both venue calls in parallel server-side — minimal leg gap, and works " +
+  "Place a 2-leg MARKET hedge ATOMICALLY: both legs are signed inside the " +
+  "enclave (if either leg fails policy, NOTHING executes), then the gateway " +
+  "fires both venue calls in parallel server-side — minimal leg gap, works " +
   "even when a venue geo-blocks your residential IP. Accepts canonical " +
   "symbol (BTC) + qty in BASE ASSET per leg (contract venues converted, " +
-  "translation echoed per leg). Result status: executed | partial | failed " +
-  "— 'partial' means ONE leg is live (naked position): inspect legs[].ok " +
-  "and repair immediately. Side effect: real or testnet trades.";
+  "translation echoed per leg). Result status: executed (both venue " +
+  "receipts accepted) | partial (ONE leg live — naked position, repair via " +
+  "legs[].outcome) | unknown (a receipt was lost — that leg MAY be live: " +
+  "reconcile with get_account BEFORE any retry, never blind-retry) | " +
+  "failed (both rejected, safe to retry). Market orders only in v1. Side " +
+  "effect: real or testnet trades.";
 
 const DESC_CANCEL_ORDER =
   "Cancel an outstanding order by its venue order_id. Signed inside the " +
@@ -254,8 +257,12 @@ const HedgeLegSchema = z.object({
   symbol: TickerSchema,
   side: OrderSideSchema,
   qty: QuantitySchema,
-  type: OrderTypeSchema,
-  price: PriceSchema,
+  type: z
+    .literal("market")
+    .describe(
+      "market only in v1 — a resting limit leg would make 'executed' hide " +
+        "an unfilled leg. Use place_order for limit orders.",
+    ),
 });
 
 server.registerTool(

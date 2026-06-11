@@ -155,6 +155,19 @@ describe("toNativeQty (okx contracts conversion)", () => {
   });
 });
 
+describe("priceToWire", () => {
+  it("passes plain decimals and rejects exponent forms", async () => {
+    const { priceToWire } = await import("../src/normalize.js");
+    expect(priceToWire(67000)).toBe("67000");
+    expect(priceToWire(0.5)).toBe("0.5");
+    // String(0.0000005) === "5e-7": signs fine in the enclave (alphabet
+    // allows e/-), dies only at the exchange — must fail closed here.
+    expect(() => priceToWire(0.0000005)).toThrow(NormalizationError);
+    expect(() => priceToWire(1e21)).toThrow(NormalizationError);
+    expect(() => priceToWire(-1)).toThrow(NormalizationError);
+  });
+});
+
 describe("translateOrder echo", () => {
   it("echoes requested vs sent with a contracts warning note for okx", () => {
     const { nativeSymbol, nativeQty, echo } = translateOrder("okx", "BTC", 0.01);
