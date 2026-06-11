@@ -499,6 +499,111 @@ export async function handlePlaceOrder(
   }
 }
 
+// ── place_hedge (batch endpoint, gateway /hedge) ──
+
+export interface HedgeLegInput {
+  venue: string;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  type: "market" | "limit";
+  price?: number;
+}
+
+export interface PlaceHedgeInput {
+  legs: HedgeLegInput[];
+}
+
+/**
+ * Atomic 2-leg hedge via the gateway's `/hedge` endpoint: both legs are
+ * signed in the enclave (all-or-nothing — a policy_denied on either leg means
+ * NOTHING executes), then the gateway fires both venue calls in parallel from
+ * the box. Unlike the other order tools, venue execution is SERVER-side: the
+ * signed auth headers never transit to this client, and the leg gap collapses
+ * from ~1.4 s (sequential client round-trips) to the venues' own latency
+ * spread.
+ *
+ * Canonical-in: each leg takes canonical symbol + base-asset qty and goes
+ * through the same translation layer as place_order; the per-leg translation
+ * is echoed back so the agent sees exactly what hit each exchange.
+ */
+export async function handlePlaceHedge(
+  cfg: GatewayConfig,
+  args: PlaceHedgeInput,
+): Promise<ToolResult> {
+  if (!Array.isArray(args.legs) || args.legs.length !== 2) {
+    return toolError(
+      "place_hedge requires exactly 2 legs.",
+      "For a single order use place_order.",
+    );
+  }
+  const translations: OrderTranslation[] = [];
+  const wireLegs: Array<{ key_id: string; order: Record<string, unknown> }> = [];
+  for (const [i, leg] of args.legs.entries()) {
+    const venue = leg.venue.toLowerCase();
+    if (!STRUCTURED_ORDER_VENUES.has(venue)) {
+      return toolError(
+        `leg ${i + 1}: place_hedge is only available for ` +
+          `${[...STRUCTURED_ORDER_VENUES].join(", ")} — "${leg.venue}" has no ` +
+          `structured order route yet.`,
+      );
+    }
+    if (leg.type === "limit" && leg.price === undefined) {
+      return toolError(`leg ${i + 1}: price is required when type=limit`);
+    }
+    let nativeSymbol: string;
+    let nativeQty: string;
+    let echo: OrderTranslation;
+    try {
+      ({ nativeSymbol, nativeQty, echo } = translateOrder(venue, leg.symbol, leg.qty));
+    } catch (err) {
+      if (err instanceof NormalizationError) {
+        return toolError(`leg ${i + 1} (${venue}): ${err.message}`);
+      }
+      throw err;
+    }
+    translations.push(echo);
+    wireLegs.push({
+      key_id: venue,
+      order: {
+        symbol: nativeSymbol,
+        side: leg.side,
+        qty: nativeQty,
+        ord_type: leg.type,
+        ...(leg.price !== undefined ? { price: String(leg.price) } : {}),
+        reduce_only: false,
+      },
+    });
+  }
+  try {
+    const result = await callGateway<{
+      status?: string;
+      legs?: unknown[];
+      [k: string]: unknown;
+    }>("/hedge", { method: "POST", body: { legs: wireLegs }, authRequired: true }, cfg);
+    const out: Record<string, unknown> = {
+      ...((result ?? {}) as Record<string, unknown>),
+      translations,
+    };
+    // A partial hedge is a NAKED position — make it impossible to miss.
+    if (result?.status === "partial") {
+      out.warning =
+        "PARTIAL HEDGE: exactly one leg executed — the position is NAKED. " +
+        "Inspect legs[].ok and repair (close the live leg or retry the dead one).";
+    }
+    return toolJson(out);
+  } catch (err) {
+    const e = err as Error;
+    if (e instanceof GatewayError && e.status === 404) {
+      return toolError(
+        "the gateway does not expose /hedge (older deploy).",
+        "Use two place_order calls until the gateway is upgraded.",
+      );
+    }
+    return toolError(e.message);
+  }
+}
+
 /**
  * Option-A flow for /sign/cancel — same as place_order.
  *

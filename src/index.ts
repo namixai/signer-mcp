@@ -40,6 +40,7 @@ import {
   handleGetAccount,
   handleGetAttestation,
   handleListVenues,
+  handlePlaceHedge,
   handlePlaceOrder,
 } from "./lib.js";
 import { getAccountParser } from "./parsers/index.js";
@@ -109,6 +110,16 @@ const DESC_PLACE_ORDER =
   "per-asset caps are rejected by the enclave before signing. Returns the " +
   "venue's order_id on success. Side effect: real or testnet trade " +
   "depending on venue env.";
+
+const DESC_PLACE_HEDGE =
+  "Place a 2-leg hedge ATOMICALLY: both legs are signed inside the enclave " +
+  "(if either leg fails policy, NOTHING executes), then the gateway fires " +
+  "both venue calls in parallel server-side — minimal leg gap, and works " +
+  "even when a venue geo-blocks your residential IP. Accepts canonical " +
+  "symbol (BTC) + qty in BASE ASSET per leg (contract venues converted, " +
+  "translation echoed per leg). Result status: executed | partial | failed " +
+  "— 'partial' means ONE leg is live (naked position): inspect legs[].ok " +
+  "and repair immediately. Side effect: real or testnet trades.";
 
 const DESC_CANCEL_ORDER =
   "Cancel an outstanding order by its venue order_id. Signed inside the " +
@@ -236,6 +247,38 @@ server.registerTool(
   },
   async (args) =>
     handlePlaceOrder(cfg, args as Parameters<typeof handlePlaceOrder>[1]),
+);
+
+const HedgeLegSchema = z.object({
+  venue: VenueIdSchema,
+  symbol: TickerSchema,
+  side: OrderSideSchema,
+  qty: QuantitySchema,
+  type: OrderTypeSchema,
+  price: PriceSchema,
+});
+
+server.registerTool(
+  "place_hedge",
+  {
+    description: DESC_PLACE_HEDGE,
+    inputSchema: {
+      legs: z
+        .array(HedgeLegSchema)
+        .length(2)
+        .describe(
+          "Exactly 2 legs. Typical hedge: same symbol, opposite sides, " +
+            "equal base-asset qty on two venues (e.g. buy 0.01 BTC binance + " +
+            "sell 0.01 BTC okx).",
+        ),
+    },
+    annotations: {
+      ...WRITE_DESTRUCTIVE_ANNOTATIONS,
+      title: "Place an atomic 2-leg hedge",
+    },
+  },
+  async (args) =>
+    handlePlaceHedge(cfg, args as Parameters<typeof handlePlaceHedge>[1]),
 );
 
 server.registerTool(
