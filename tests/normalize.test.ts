@@ -125,6 +125,18 @@ describe("toNativeQty (okx contracts conversion)", () => {
     });
   });
 
+  it("rejects exponent-form qty on EVERY venue — '1e-7' must never hit a wire", () => {
+    expect(() => toNativeQty("binance", "BTCUSDT", 1e-7)).toThrow(
+      /plain decimal/,
+    );
+    expect(() => toNativeQty("binance", "BTCUSDT", 1e21)).toThrow(
+      NormalizationError,
+    );
+    expect(() => toNativeQty("okx", "BTC-USDT-SWAP", 1e-7)).toThrow(
+      NormalizationError,
+    );
+  });
+
   it("float artifacts do not poison the conversion (0.1+0.2 class)", () => {
     // 0.30000000000000004 stringifies with the artifact and MUST be rejected
     // (more precision than the grid), not silently accepted as 0.3.

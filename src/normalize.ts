@@ -190,8 +190,18 @@ export function toNativeQty(
   if (!(Number.isFinite(qtyBase) && qtyBase > 0)) {
     throw new NormalizationError(`qty must be a positive number, got ${qtyBase}`);
   }
+  const qtyStr = String(qtyBase);
+  // Exponent forms ("1e-7", "1e+21") must never reach an exchange wire —
+  // venues expect plain decimals and may mis-parse or opaquely reject them.
+  // This applies to EVERY venue, not just contract-denominated ones.
+  if (!/^\d+(\.\d+)?$/.test(qtyStr)) {
+    throw new NormalizationError(
+      `qty ${qtyStr} is not expressible as a plain decimal (too small/large) — ` +
+        `use a size the venue can actually accept.`,
+    );
+  }
   if (venue !== "okx") {
-    return { nativeQty: String(qtyBase), nativeUnit: "base" };
+    return { nativeQty: qtyStr, nativeUnit: "base" };
   }
   const spec = OKX_SWAP_SPECS[nativeSymbol];
   if (spec === undefined) {
@@ -218,11 +228,17 @@ export function toNativeQty(
   if (qtyInt % stepBaseInt !== 0) {
     const below = Math.floor(qtyInt / stepBaseInt) * stepBaseInt;
     const above = below + stepBaseInt;
+    // below can be 0 (qty under one lot step) — 0 is not a valid order size,
+    // so only offer it when it's a real choice.
+    const choices =
+      below > 0
+        ? `${fromScaledInt(below, SCALE)} or ${fromScaledInt(above, SCALE)}`
+        : fromScaledInt(above, SCALE);
     throw new NormalizationError(
       `okx ${nativeSymbol}: ${qtyBase} base is not a clean ` +
         `multiple of the contract grid (1 contract = ${spec.ctVal} base, lot step ` +
         `${spec.lotSz} contracts = ${fromScaledInt(stepBaseInt, SCALE)} base). ` +
-        `Nearest valid sizes: ${fromScaledInt(below, SCALE)} or ${fromScaledInt(above, SCALE)} base. ` +
+        `Nearest valid size(s): ${choices} base. ` +
         `Refusing to round silently.`,
     );
   }
