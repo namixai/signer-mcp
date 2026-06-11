@@ -180,12 +180,21 @@ Place a single market or limit order. The enclave signs the payload after checki
 
 Args:
 - `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_main`
-- `symbol` — venue-native symbol (`BTCUSDT`, `BTC-USDT-SWAP`, `XBTUSDTM`, `BTC`, etc. — see the venue table above)
+- `symbol` — canonical (`BTC`, `BTCUSDT`, `BTC/USDT`) **or** venue-native (`BTC-USDT-SWAP`, `XBTUSDTM`, …). The client translates to the venue's native format and echoes it back.
 - `side` — `buy` | `sell`
-- `qty` — base-asset quantity (e.g. 0.001 for 0.001 BTC). Not USD-notional.
+- `qty` — **always base-asset quantity** (e.g. 0.001 for 0.001 BTC). Not USD-notional, not venue contracts. Contract-denominated venues (okx: 1 contract = 0.01 BTC on `BTC-USDT-SWAP`) are converted automatically; sizes off the venue's contract grid are rejected, never silently rounded.
 - `type` — `market` | `limit`
 - `price` — required if `type=limit`, ignored if `type=market`
 - `policy_id` — optional override; defaults to the policy bound to your token
+
+The result includes a `translation` echo — check `translation.sent` to see the exact venue-native symbol + size that hit the exchange:
+
+```json
+{
+  "requested": { "symbol": "BTC", "qty": 0.01, "unit": "base_asset" },
+  "sent": { "symbol": "BTC-USDT-SWAP", "qty": "1", "unit": "contracts", "ctVal": "0.01" }
+}
+```
 
 ```json
 {

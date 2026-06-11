@@ -5,7 +5,7 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.2.3";
+export const PACKAGE_VERSION = "0.3.0";
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 // Venues that have a structured order/cancel route on the gateway
@@ -455,6 +455,19 @@ export async function handlePlaceOrder(
         `in this signer (v0). "${args.venue}" has no structured order route yet.`,
     );
   }
+  // Canonical → venue-native translation (symbol AND size). qty is ALWAYS in
+  // base asset at the tool boundary; OKX is converted to contracts here (the
+  // silent-100×-undersize bug class). Conversion failures are user-facing
+  // errors, not exceptions.
+  let nativeSymbol: string;
+  let nativeQty: string;
+  let echo: OrderTranslation;
+  try {
+    ({ nativeSymbol, nativeQty, echo } = translateOrder(venue, args.symbol, args.qty));
+  } catch (err) {
+    if (err instanceof NormalizationError) return toolError(err.message);
+    throw err;
+  }
   try {
     // Gateway contract (proto.rs SignBinanceOrderRequest / SignOkxOrderRequest):
     //   { key_id, order: { symbol, side, qty, ord_type, price?, reduce_only } }
@@ -462,12 +475,13 @@ export async function handlePlaceOrder(
     //   SINGLE mapping point that becomes customer-scoped in multi-tenant (#132).
     // - qty/price are STRINGS in OrderParams; tool input `type` → gateway `ord_type`;
     //   `price` is omitted for market orders (gateway field is optional).
+    // - The enclave policy cap compares the venue-NATIVE qty (OKX: contracts).
     const body = {
       key_id: venue,
       order: {
-        symbol: args.symbol,
+        symbol: nativeSymbol,
         side: args.side,
-        qty: String(args.qty),
+        qty: nativeQty,
         ord_type: args.type,
         ...(args.price !== undefined ? { price: String(args.price) } : {}),
         reduce_only: false,
@@ -479,7 +493,7 @@ export async function handlePlaceOrder(
       cfg,
     );
     const venueResponse = await submitSignedBundle(signed, cfg.fetchImpl, cfg.fetchTimeoutMs);
-    return toolJson({ venue: args.venue, response: venueResponse });
+    return toolJson({ venue: args.venue, translation: echo, response: venueResponse });
   } catch (err) {
     return toolError((err as Error).message);
   }
@@ -510,15 +524,24 @@ export async function handleCancelOrder(
   if (!args.symbol) {
     return toolError(
       `cancel_order on "${args.venue}" requires "symbol" — its cancel REST route ` +
-        `needs the venue-native symbol (e.g. BTCUSDT) alongside order_id.`,
+        `needs the symbol (canonical "BTC" or venue-native) alongside order_id.`,
     );
+  }
+  // Same canonical→native symbol translation as place_order, so a cancel can
+  // reuse the symbol the agent placed with (canonical or native).
+  let nativeSymbol: string;
+  try {
+    nativeSymbol = toNativeSymbol(venue, args.symbol);
+  } catch (err) {
+    if (err instanceof NormalizationError) return toolError(err.message);
+    throw err;
   }
   try {
     // Gateway contract (proto.rs SignBinanceCancelRequest / SignOkxCancelRequest):
     //   { key_id, cancel: { symbol, order_id } }  — same key_id mapping as place_order.
     const body = {
       key_id: venue,
-      cancel: { symbol: args.symbol, order_id: args.order_id },
+      cancel: { symbol: nativeSymbol, order_id: args.order_id },
     };
     const signed = await callGateway<unknown>(
       `/sign/${venue}-cancel`,
@@ -536,3 +559,18 @@ export async function handleCancelOrder(
 // the parsers module directly (keeps lib.ts the single public surface).
 import type { AccountParser } from "./parsers/types.js";
 export type { AccountParser };
+
+import {
+  NormalizationError,
+  toNativeSymbol,
+  translateOrder,
+  type OrderTranslation,
+} from "./normalize.js";
+export {
+  NormalizationError,
+  toNativeSymbol,
+  translateOrder,
+  canonicalBase,
+  toNativeQty,
+  OKX_SWAP_SPECS,
+} from "./normalize.js";

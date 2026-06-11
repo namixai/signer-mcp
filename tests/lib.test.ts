@@ -473,7 +473,7 @@ describe("place_order", () => {
     expect(body.policy_id).toBeUndefined();
   });
 
-  it("omits price for market orders in the {key_id, order} body", async () => {
+  it("omits price for market orders + converts okx qty BTC→contracts", async () => {
     const fetchSpy = mockFetch({ order_id: "okx_7" });
     const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
     const res = await handlePlaceOrder(cfg, {
@@ -488,14 +488,70 @@ describe("place_order", () => {
     expect(call[0]).toBe("https://signer.test/sign/okx-order");
     const body = JSON.parse(call[1].body);
     expect(body.key_id).toBe("okx");
+    // The 100×-undersize fix: 0.01 BTC = 1 contract (ctVal 0.01) — the wire
+    // qty is CONTRACTS, not the raw base number.
     expect(body.order).toEqual({
       symbol: "BTC-USDT-SWAP",
       side: "sell",
-      qty: "0.01",
+      qty: "1",
       ord_type: "market",
       reduce_only: false,
     });
     expect("price" in body.order).toBe(false);
+    // The translation echo tells the agent exactly what was sent.
+    const out = jsonBodyOf(res);
+    expect(out.translation.sent).toMatchObject({
+      symbol: "BTC-USDT-SWAP",
+      qty: "1",
+      unit: "contracts",
+      ctVal: "0.01",
+    });
+  });
+
+  it("accepts canonical symbol + base qty and translates per venue", async () => {
+    const fetchSpy = mockFetch({ order_id: "okx_8" });
+    const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
+    const res = await handlePlaceOrder(cfg, {
+      venue: "okx",
+      symbol: "BTC",
+      side: "buy",
+      qty: 0.02,
+      type: "market",
+    });
+    expect(res.isError).toBeUndefined();
+    const body = JSON.parse((fetchSpy as any).mock.calls[0][1].body);
+    expect(body.order.symbol).toBe("BTC-USDT-SWAP");
+    expect(body.order.qty).toBe("2");
+  });
+
+  it("rejects an okx qty that is off the contract grid — never silently rounds", async () => {
+    const fetchSpy = mockFetch({});
+    const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
+    const res = await handlePlaceOrder(cfg, {
+      venue: "okx",
+      symbol: "BTC",
+      side: "buy",
+      qty: 0.012345,
+      type: "market",
+    });
+    expect(res.isError).toBe(true);
+    expect(jsonBodyOf(res).error).toContain("not a clean multiple");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects an okx instrument missing from the pinned spec table (fail closed)", async () => {
+    const fetchSpy = mockFetch({});
+    const cfg = { gatewayUrl: "https://signer.test", apiToken: "tok", fetchImpl: fetchSpy };
+    const res = await handlePlaceOrder(cfg, {
+      venue: "okx",
+      symbol: "DOGE-USDT-SWAP",
+      side: "buy",
+      qty: 100,
+      type: "market",
+    });
+    expect(res.isError).toBe(true);
+    expect(jsonBodyOf(res).error).toContain("pinned spec table");
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
   it("returns a clear error for place_order on a venue without a structured route", async () => {
@@ -552,9 +608,11 @@ describe("cancel_order", () => {
     const call = (fetchSpy as any).mock.calls[0];
     expect(call[0]).toBe("https://signer.test/sign/okx-cancel");
     // Gateway proto.rs SignOkxCancelRequest { key_id, cancel: CancelParams }.
+    // Symbol is normalized to venue-native: "BTC-USDT" (spot spelling) would
+    // never match an okx swap order — translation fixes it to BTC-USDT-SWAP.
     expect(JSON.parse(call[1].body)).toEqual({
       key_id: "okx",
-      cancel: { symbol: "BTC-USDT", order_id: "OKX-123" },
+      cancel: { symbol: "BTC-USDT-SWAP", order_id: "OKX-123" },
     });
   });
 

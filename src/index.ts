@@ -100,11 +100,15 @@ const DESC_GET_ACCOUNT =
   "confirm the account has margin. Requires SIGNER_API_TOKEN.";
 
 const DESC_PLACE_ORDER =
-  "Place a single order on the named venue. The Signer enclave will sign " +
-  "the venue-native payload using a key that has never been exported. " +
-  "Policy enforced server-side: orders that exceed per-asset caps are " +
-  "rejected by the enclave before signing. Returns the venue's order_id on " +
-  "success. Side effect: real or testnet trade depending on venue env.";
+  "Place a single order on the named venue. Accepts canonical symbol (BTC / " +
+  "BTCUSDT) and qty in BASE ASSET; translates both to the venue's native " +
+  "format (okx sizes in contracts) and echoes the translation in the result " +
+  "— always check `translation.sent` to see what actually hit the exchange. " +
+  "The Signer enclave signs the venue-native payload using a key that has " +
+  "never been exported. Policy enforced server-side: orders that exceed " +
+  "per-asset caps are rejected by the enclave before signing. Returns the " +
+  "venue's order_id on success. Side effect: real or testnet trade " +
+  "depending on venue env.";
 
 const DESC_CANCEL_ORDER =
   "Cancel an outstanding order by its venue order_id. Signed inside the " +
@@ -124,11 +128,12 @@ const TickerSchema = z
   .string()
   .min(1)
   .max(32)
-  .regex(/^[A-Z0-9_-]+$/, "Use venue-native symbol format (no slash)")
+  .regex(/^[A-Za-z0-9/_-]+$/, "Letters, digits, '-', '_' or '/' only")
   .describe(
-    "Venue-native trading symbol. Examples: BTCUSDT (binance, bybit), " +
-      "BTC-USDT-SWAP (okx), BTC-USD (asterdex), XBTUSDTM (kucoin futures), " +
-      "BTC (hyperliquid_main). Case-sensitive.",
+    "Trading symbol — canonical or venue-native, we translate. Canonical: " +
+      "base asset ('BTC') or pair ('BTCUSDT', 'BTC/USDT'). Venue-native also " +
+      "accepted (BTC-USDT-SWAP on okx, XBTUSDTM on kucoin). The tool result " +
+      "echoes the exact venue-native symbol that was sent.",
   );
 
 const OrderSideSchema = z
@@ -145,8 +150,11 @@ const QuantitySchema = z
   .number()
   .positive()
   .describe(
-    "Order quantity in base asset (e.g. BTC), NOT in USD-notional. Some " +
-      "venues require a minimum (Binance: 0.001 BTC). Refer to venue docs.",
+    "Order quantity ALWAYS in base asset (e.g. BTC) — NOT USD-notional and " +
+      "NOT venue contracts. Venues that size orders in contracts (okx: 1 " +
+      "contract = 0.01 BTC on BTC-USDT-SWAP) are converted automatically and " +
+      "the conversion is echoed in the result. Sizes that don't fit the " +
+      "venue's contract grid are rejected, never silently rounded.",
   );
 
 const PriceSchema = z
