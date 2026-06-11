@@ -270,6 +270,26 @@ export function toNativeQty(
   };
 }
 
+/**
+ * Validate a limit price the same way qty is validated: plain decimal only.
+ * `String(0.0000005)` is `"5e-7"` — the enclave's signing alphabet allows
+ * `e`/`-`, so an exponent-form price SIGNS fine and only fails at the
+ * exchange, after a sibling hedge leg may already be live. Fail closed here.
+ */
+export function priceToWire(price: number): string {
+  if (!(Number.isFinite(price) && price > 0)) {
+    throw new NormalizationError(`price must be a positive number, got ${price}`);
+  }
+  const s = String(price);
+  if (!/^\d+(\.\d+)?$/.test(s)) {
+    throw new NormalizationError(
+      `price ${s} is not expressible as a plain decimal (too small/large) — ` +
+        `use a price the venue can actually accept.`,
+    );
+  }
+  return s;
+}
+
 // ── Echo payload ──
 
 export interface OrderTranslation {

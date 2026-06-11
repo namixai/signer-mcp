@@ -462,8 +462,12 @@ export async function handlePlaceOrder(
   let nativeSymbol: string;
   let nativeQty: string;
   let echo: OrderTranslation;
+  let wirePrice: string | undefined;
   try {
     ({ nativeSymbol, nativeQty, echo } = translateOrder(venue, args.symbol, args.qty));
+    // Same plain-decimal gate as qty: an exponent-form price ("5e-7") signs
+    // fine (enclave alphabet allows e/-) and only dies at the exchange.
+    wirePrice = args.price !== undefined ? priceToWire(args.price) : undefined;
   } catch (err) {
     if (err instanceof NormalizationError) return toolError(err.message);
     throw err;
@@ -483,7 +487,7 @@ export async function handlePlaceOrder(
         side: args.side,
         qty: nativeQty,
         ord_type: args.type,
-        ...(args.price !== undefined ? { price: String(args.price) } : {}),
+        ...(wirePrice !== undefined ? { price: wirePrice } : {}),
         reduce_only: false,
       },
     };
@@ -496,6 +500,136 @@ export async function handlePlaceOrder(
     return toolJson({ venue: args.venue, translation: echo, response: venueResponse });
   } catch (err) {
     return toolError((err as Error).message);
+  }
+}
+
+// ── place_hedge (batch endpoint, gateway /hedge) ──
+
+export interface HedgeLegInput {
+  venue: string;
+  symbol: string;
+  side: "buy" | "sell";
+  qty: number;
+  /** v1: market only — a resting limit leg would make "executed" lie. */
+  type: "market";
+}
+
+export interface PlaceHedgeInput {
+  legs: HedgeLegInput[];
+}
+
+/**
+ * Atomic 2-leg hedge via the gateway's `/hedge` endpoint: both legs are
+ * signed in the enclave (all-or-nothing — a policy_denied on either leg means
+ * NOTHING executes), then the gateway fires both venue calls in parallel from
+ * the box. Unlike the other order tools, venue execution is SERVER-side: the
+ * signed auth headers never transit to this client, and the leg gap collapses
+ * from ~1.4 s (sequential client round-trips) to the venues' own latency
+ * spread.
+ *
+ * Canonical-in: each leg takes canonical symbol + base-asset qty and goes
+ * through the same translation layer as place_order; the per-leg translation
+ * is echoed back so the agent sees exactly what hit each exchange.
+ */
+export async function handlePlaceHedge(
+  cfg: GatewayConfig,
+  args: PlaceHedgeInput,
+): Promise<ToolResult> {
+  if (!Array.isArray(args.legs) || args.legs.length !== 2) {
+    return toolError(
+      "place_hedge requires exactly 2 legs.",
+      "For a single order use place_order.",
+    );
+  }
+  const translations: OrderTranslation[] = [];
+  const wireLegs: Array<{ key_id: string; order: Record<string, unknown> }> = [];
+  for (const [i, leg] of args.legs.entries()) {
+    const venue = leg.venue.toLowerCase();
+    if (!STRUCTURED_ORDER_VENUES.has(venue)) {
+      return toolError(
+        `leg ${i + 1}: place_hedge is only available for ` +
+          `${[...STRUCTURED_ORDER_VENUES].join(", ")} — "${leg.venue}" has no ` +
+          `structured order route yet.`,
+      );
+    }
+    // v1 is market-only (mirrors the gateway's validation): a resting GTC
+    // limit leg would let status="executed" hide an unfilled leg.
+    if (leg.type !== "market") {
+      return toolError(
+        `leg ${i + 1}: place_hedge is market-only in v1 (got type=${String(leg.type)}).`,
+        "Use place_order for limit orders.",
+      );
+    }
+    let nativeSymbol: string;
+    let nativeQty: string;
+    let echo: OrderTranslation;
+    try {
+      ({ nativeSymbol, nativeQty, echo } = translateOrder(venue, leg.symbol, leg.qty));
+    } catch (err) {
+      if (err instanceof NormalizationError) {
+        return toolError(`leg ${i + 1} (${venue}): ${err.message}`);
+      }
+      throw err;
+    }
+    translations.push(echo);
+    wireLegs.push({
+      key_id: venue,
+      order: {
+        symbol: nativeSymbol,
+        side: leg.side,
+        qty: nativeQty,
+        ord_type: "market",
+        reduce_only: false,
+      },
+    });
+  }
+  try {
+    const result = await callGateway<{
+      status?: string;
+      legs?: unknown[];
+      [k: string]: unknown;
+    }>("/hedge", { method: "POST", body: { legs: wireLegs }, authRequired: true }, cfg);
+    const out: Record<string, unknown> = {
+      ...((result ?? {}) as Record<string, unknown>),
+      translations,
+    };
+    // Per-leg outcomes: ok | rejected | unknown. The distinction matters
+    // with real money — "unknown" (timeout/5xx, receipt lost) may be a LIVE
+    // order, and a blind retry would double the position.
+    if (result?.status === "partial") {
+      out.warning =
+        "PARTIAL HEDGE: exactly one leg is live — the position is NAKED. " +
+        "Repair by closing the live leg or re-placing the leg whose outcome " +
+        "is 'rejected'. NEVER re-place a leg whose outcome is 'unknown' — " +
+        "query its state first (get_account / order lookup).";
+    } else if (result?.status === "unknown") {
+      out.warning =
+        "EXECUTION STATE UNKNOWN: at least one leg's receipt was lost " +
+        "(timeout / venue 5xx) — that order MAY BE LIVE on the exchange. " +
+        "Do NOT retry place_hedge. Reconcile first: get_account on both " +
+        "venues, find the order, then close or complete the hedge manually.";
+    } else if (result?.status === "failed") {
+      out.warning =
+        "Both legs were definitively rejected by the venues — nothing is " +
+        "live. Safe to fix the inputs and retry.";
+    }
+    return toolJson(out);
+  } catch (err) {
+    const e = err as Error;
+    if (e instanceof GatewayError && e.status === 404) {
+      return toolError(
+        "the gateway does not expose /hedge (older deploy).",
+        "Use two place_order calls until the gateway is upgraded.",
+      );
+    }
+    // The gateway accepted the request but the response never made it back
+    // (network drop, our 30s abort, gateway 408/502). Orders MAY be live.
+    return toolError(
+      e.message,
+      "place_hedge state is UNKNOWN: the gateway may have executed one or " +
+        "both legs. Do NOT blindly retry — check get_account on both venues " +
+        "and reconcile open orders/positions first.",
+    );
   }
 }
 
@@ -562,12 +696,14 @@ export type { AccountParser };
 
 import {
   NormalizationError,
+  priceToWire,
   toNativeSymbol,
   translateOrder,
   type OrderTranslation,
 } from "./normalize.js";
 export {
   NormalizationError,
+  priceToWire,
   toNativeSymbol,
   translateOrder,
   canonicalBase,
