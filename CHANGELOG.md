@@ -7,6 +7,40 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 ### Added
 - (placeholder)
 
+## [0.3.0] - 2026-06-11
+
+### Fixed
+- **CRITICAL: OKX orders were silently ~100× undersized (contracts vs base
+  asset).** OKX perp swap `sz` is denominated in CONTRACTS (`BTC-USDT-SWAP`:
+  1 contract = 0.01 BTC), but the client passed `qty` through raw. An agent
+  sending `qty=0.01` (meaning 0.01 BTC) actually traded 0.01 contracts =
+  0.0001 BTC — a "balanced hedge" against a Binance leg was really a naked
+  position. `qty` is now ALWAYS base asset at the tool boundary and is
+  converted to venue-native contracts via a pinned per-instrument `ctVal`
+  table (BTC/ETH/SOL USDT swaps, verified against `GET
+  /api/v5/public/instruments` 2026-06-11). Sizes that don't fit the contract
+  grid, fall below the venue minimum, or reference an instrument not in the
+  pinned table are REJECTED with the nearest valid sizes spelled out — never
+  silently rounded, never passed through raw.
+
+### Added
+- **Venue normalization layer (canonical symbol).** `place_order` /
+  `cancel_order` now accept the canonical base (`BTC`), canonical pairs
+  (`BTCUSDT`, `BTC/USDT`), or the venue-native symbol, and translate to the
+  venue's native format (`BTC-USDT-SWAP` on okx, `XBTUSDTM` on kucoin, …).
+  Unknown/ambiguous symbols are rejected with the expected native form.
+- **Translation echo.** `place_order` results now include a `translation`
+  object showing `requested` (user units) vs `sent` (venue-native symbol,
+  qty, unit, ctVal) so the agent always sees exactly what hit the exchange —
+  kills the silent-unit-mismatch class.
+
+### Changed
+- **BREAKING (okx semantics):** if you previously passed OKX `qty` in
+  contracts, the same number now means base asset and converts to ~100× more
+  contracts — such orders will be rejected by the server-side policy cap
+  until the cap is re-papered in contracts. Binance is unchanged (already
+  base-asset-denominated).
+
 ## [0.2.3] - 2026-06-10
 
 ### Fixed
