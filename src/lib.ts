@@ -47,8 +47,11 @@ export const STATIC_VENUES: VenueEntry[] = [
     auth_scheme: "hmac_sha256",
     status: "live",
     notes:
-      "Binance USD-M futures via REST. v0 limited to testnet until pilot " +
-      "graduates. Symbol format: BTCUSDT (no slash).",
+      "Binance USD-M futures via REST. Mainnet signing is exercised in " +
+      "production, with OUR OWN funds — founder dogfood since 2026-07-27. " +
+      "External design partners remain on testnet: this is NOT client traffic " +
+      "on mainnet, and should not be read as such. USD-M futures only — spot " +
+      "order signing is not implemented. Symbol format: BTCUSDT (no slash).",
   },
   {
     venue: "okx",
@@ -56,8 +59,10 @@ export const STATIC_VENUES: VenueEntry[] = [
     auth_scheme: "hmac_sha256",
     status: "live",
     notes:
-      "OKX perpetual swap via REST. v0 limited to testnet. Symbol format: " +
-      "BTC-USDT-SWAP.",
+      "OKX perpetual swap via REST. The signer implements it, but no OKX key " +
+      "is provisioned in the reference deployment — so it signs nowhere today, " +
+      "mainnet or testnet. \"Limited to testnet\" would imply testnet works. " +
+      "Symbol format: BTC-USDT-SWAP.",
   },
   {
     venue: "asterdex",
