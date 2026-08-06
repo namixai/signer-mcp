@@ -4,6 +4,36 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-06 (Hyperliquid mainnet status corrected)
+
+### Fixed
+- **`hyperliquid_main` was listed as an ordinary, usable venue. It is not.** The
+  enclave refuses `sign_hyperliquid_main_order` / `_cancel` before it loads or
+  decrypts any key material, and has done so since 2026-06-26. Anyone building
+  against the old manifest produced a call that could only come back as a policy
+  denial. This was a functional bug, not a documentation nit.
+
+### Added
+- **`status: "live" | "denied"` on every venue entry.** The correction is data,
+  not prose: a caller that reads a machine-readable manifest and ignores free
+  text is behaving reasonably, and would still have tried.
+- **`hyperliquid_testnet`**, status `live`, listed ahead of the denied mainnet
+  entry. Saying only "Hyperliquid is denied" would be its own inaccuracy in the
+  other direction — testnet signs through the same EIP-712 code path, differing
+  only in the phantom-agent source byte.
+
+### Changed
+- `denied` means the signature is refused **inside the enclave**, not that
+  configuration is missing. Supplying credentials does not change it. The venue
+  notes now say so explicitly.
+- `list_signer_venues` returns the manifest verbatim, so the new field and the
+  testnet entry appear without further change.
+
+### Upgrading
+`VenueEntry` gained a required `status` field, so TypeScript consumers that
+construct or implement the interface must add it. Consumers that only READ the
+manifest are unaffected apart from seeing one more venue and the new field.
+
 ### Added
 - (placeholder)
 
