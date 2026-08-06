@@ -89,6 +89,17 @@ export const STATIC_VENUES: VenueEntry[] = [
       "BTCUSDT (no slash).",
   },
   {
+    venue: "hyperliquid_testnet",
+    asset_class: "perp",
+    auth_scheme: "eip712",
+    status: "live",
+    network: "hyperliquid-testnet",
+    notes:
+      "Hyperliquid testnet perp, EIP-712 action signing. This is the Hyperliquid " +
+      "path that actually signs — same enclave code as mainnet, differing only in " +
+      "the phantom-agent source byte. Symbol format: bare coin name, e.g. BTC.",
+  },
+  {
     venue: "hyperliquid_main",
     asset_class: "perp",
     auth_scheme: "eip712",
