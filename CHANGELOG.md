@@ -4,6 +4,42 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-08-06 (venue notes brought to the facts)
+
+### Fixed
+- **`binance` claimed "v0 limited to testnet until pilot graduates". That has been
+  false since 2026-07-27**, when the signer began signing real orders with real
+  money on Binance mainnet. Anyone reading the manifest to decide whether mainnet
+  was usable got the wrong answer for over a week.
+
+  The replacement states *whose* mainnet, because a blanket "mainnet-live" reads
+  as "clients are trading live" and that is not true: it is **founder dogfood on
+  our own funds**, and external design partners remain on **testnet**. The note
+  also says USD-M futures only — spot order signing is not implemented, and
+  "spot routes merged" is not the same claim.
+- **`okx` said "v0 limited to testnet", which implies testnet works.** No OKX key
+  is provisioned in the reference deployment, so it signs nowhere today — mainnet
+  or testnet. Stated plainly instead.
+
+### Changed
+- `VenueEntry.status` is documented as a statement about the **signer's rules**,
+  not about any deployment's provisioning, and deliberately gains no
+  `unavailable` state. "No key here" differs per operator: encoding it would make
+  the manifest wrong for everyone but one deployment and would drift the moment a
+  key is added — the exact failure this field exists to prevent. The `okx` note
+  is reworded the same way: what the enclave does, plus what Usenami's hosted
+  deployment happens to have, clearly separated.
+
+### Notes
+- Five entries remain after `binance` and `okx`, and they split in two:
+  `asterdex`, `kucoin` and `bybit` carry **no** deployment-state claims — auth
+  scheme and symbol format only, which is what a venue manifest should assert.
+  The two `hyperliquid_*` entries **do** carry status, deliberately: that was the
+  point of the previous release, and `hyperliquid_main` being `denied` is a
+  property of the enclave, not of any one deployment.
+  Every venue listed has a real handler in the enclave — checked against
+  `venue_for_action`, not assumed.
+
 ## [0.4.0] — 2026-08-06 (Hyperliquid mainnet status corrected)
 
 ### Fixed
