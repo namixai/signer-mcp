@@ -75,15 +75,28 @@ describe("list_venues", () => {
     const res = await handleListVenues();
     const body = jsonBodyOf(res);
     expect(body.count).toBe(STATIC_VENUES.length);
-    expect(body.count).toBe(6);
+    expect(body.count).toBe(7);
     expect(body.venues.map((v: any) => v.venue)).toEqual([
       "binance",
       "okx",
       "asterdex",
       "kucoin",
       "bybit",
+      "hyperliquid_testnet",
       "hyperliquid_main",
     ]);
+    // Pin WHICH venue is denied, not merely that a status field parses. An
+    // assertion that accepted any status would stay green if hyperliquid_main
+    // flipped back to "live" — the exact regression this manifest exists to
+    // prevent, and the one that shipped for forty days.
+    const byVenue = Object.fromEntries(
+      body.venues.map((v: any) => [v.venue, v.status]),
+    );
+    expect(byVenue["hyperliquid_main"]).toBe("denied");
+    expect(byVenue["hyperliquid_testnet"]).toBe("live");
+    expect(
+      body.venues.filter((v: any) => v.status === "denied").map((v: any) => v.venue),
+    ).toEqual(["hyperliquid_main"]);
     expect(body.venues[0].auth_scheme).toBe("hmac_sha256");
     // All 6 venues carry the three required manifest fields.
     for (const v of body.venues) {

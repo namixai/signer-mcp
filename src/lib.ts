@@ -30,6 +30,13 @@ export interface VenueEntry {
   asset_class: string;
   auth_scheme: "hmac_sha256" | "eip712" | "ed25519";
   network?: string;
+  /**
+   * Whether the signer will actually produce a signature for this venue today.
+   * `denied` means the ENCLAVE refuses the action before loading any key — it is
+   * not a configuration gap and credentials will not change it. Machine-readable
+   * on purpose: a caller that only reads `notes` will still try and still fail.
+   */
+  status: "live" | "denied";
   notes?: string;
 }
 
@@ -38,6 +45,7 @@ export const STATIC_VENUES: VenueEntry[] = [
     venue: "binance",
     asset_class: "perp",
     auth_scheme: "hmac_sha256",
+    status: "live",
     notes:
       "Binance USD-M futures via REST. v0 limited to testnet until pilot " +
       "graduates. Symbol format: BTCUSDT (no slash).",
@@ -46,6 +54,7 @@ export const STATIC_VENUES: VenueEntry[] = [
     venue: "okx",
     asset_class: "perp",
     auth_scheme: "hmac_sha256",
+    status: "live",
     notes:
       "OKX perpetual swap via REST. v0 limited to testnet. Symbol format: " +
       "BTC-USDT-SWAP.",
@@ -54,6 +63,7 @@ export const STATIC_VENUES: VenueEntry[] = [
     venue: "asterdex",
     asset_class: "perp",
     auth_scheme: "eip712",
+    status: "live",
     network: "bsc",
     notes:
       "Asterdex on-chain perp. Uses Asterdex platform-controlled API wallet " +
@@ -63,6 +73,7 @@ export const STATIC_VENUES: VenueEntry[] = [
     venue: "kucoin",
     asset_class: "perp",
     auth_scheme: "hmac_sha256",
+    status: "live",
     notes:
       "KuCoin Futures perp via REST. HMAC-SHA256 + KuCoin v2 encrypted " +
       "passphrase, all signed inside the enclave. Symbol format: XBTUSDTM " +
@@ -72,19 +83,35 @@ export const STATIC_VENUES: VenueEntry[] = [
     venue: "bybit",
     asset_class: "perp",
     auth_scheme: "hmac_sha256",
+    status: "live",
     notes:
       "Bybit V5 linear perp via REST (category=linear). Symbol format: " +
       "BTCUSDT (no slash).",
   },
   {
+    venue: "hyperliquid_testnet",
+    asset_class: "perp",
+    auth_scheme: "eip712",
+    status: "live",
+    network: "hyperliquid-testnet",
+    notes:
+      "Hyperliquid testnet perp, EIP-712 action signing. This is the Hyperliquid " +
+      "path that actually signs — same enclave code as mainnet, differing only in " +
+      "the phantom-agent source byte. Symbol format: bare coin name, e.g. BTC.",
+  },
+  {
     venue: "hyperliquid_main",
     asset_class: "perp",
     auth_scheme: "eip712",
+    status: "denied",
     network: "hyperliquid",
     notes:
-      "Hyperliquid L1 perp. EIP-712 action signing (orders POST /exchange). " +
-      "Symbol format: bare coin name, e.g. BTC. Account state is a public " +
-      "read (POST /info clearinghouseState).",
+      "Hyperliquid L1 perp, EIP-712 action signing. MAINNET IS DENIED INSIDE THE " +
+      "ENCLAVE: sign_hyperliquid_main_order / _cancel are refused before any key " +
+      "material is loaded or decrypted, so no signature is produced and there is " +
+      "nothing to submit. This is a denial, not a missing configuration — supplying " +
+      "credentials will not change it. Hyperliquid TESTNET signs through the same " +
+      "code path. Symbol format: bare coin name, e.g. BTC.",
   },
 ];
 
