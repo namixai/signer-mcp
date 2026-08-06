@@ -31,10 +31,19 @@ export interface VenueEntry {
   auth_scheme: "hmac_sha256" | "eip712" | "ed25519";
   network?: string;
   /**
-   * Whether the signer will actually produce a signature for this venue today.
-   * `denied` means the ENCLAVE refuses the action before loading any key — it is
-   * not a configuration gap and credentials will not change it. Machine-readable
-   * on purpose: a caller that only reads `notes` will still try and still fail.
+   * What the SIGNER's rules do with this venue — deliberately NOT what any one
+   * deployment has provisioned.
+   *
+   * - `denied`: the ENCLAVE refuses the action before loading any key material.
+   *   Not a configuration gap; credentials will not change it.
+   * - `live`:   the enclave will sign, given a provisioned key.
+   *
+   * There is intentionally no `unavailable` state for "no key here". Key
+   * provisioning differs per deployment, so putting it in this contract would
+   * make the manifest wrong for every operator except one, and would drift the
+   * moment a key is added — the exact failure this field was introduced to stop.
+   * Whether a key exists is answered by the gateway, not by a constant shipped
+   * in a package.
    */
   status: "live" | "denied";
   notes?: string;
@@ -59,9 +68,11 @@ export const STATIC_VENUES: VenueEntry[] = [
     auth_scheme: "hmac_sha256",
     status: "live",
     notes:
-      "OKX perpetual swap via REST. The signer implements it, but no OKX key " +
-      "is provisioned in the reference deployment — so it signs nowhere today, " +
-      "mainnet or testnet. \"Limited to testnet\" would imply testnet works. " +
+      "OKX perpetual swap via REST. The enclave implements it and will sign " +
+      "once an OKX key is provisioned — provisioning is a property of YOUR " +
+      "deployment, not of this manifest. In Usenami's hosted deployment none " +
+      "is provisioned today, so it signs nowhere there; the earlier wording " +
+      "\"limited to testnet\" was wrong because it implied testnet worked. " +
       "Symbol format: BTC-USDT-SWAP.",
   },
   {

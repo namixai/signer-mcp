@@ -21,9 +21,22 @@ All notable changes to `@usenami/signer-mcp` are documented here. Format follows
   is provisioned in the reference deployment, so it signs nowhere today — mainnet
   or testnet. Stated plainly instead.
 
+### Changed
+- `VenueEntry.status` is documented as a statement about the **signer's rules**,
+  not about any deployment's provisioning, and deliberately gains no
+  `unavailable` state. "No key here" differs per operator: encoding it would make
+  the manifest wrong for everyone but one deployment and would drift the moment a
+  key is added — the exact failure this field exists to prevent. The `okx` note
+  is reworded the same way: what the enclave does, plus what Usenami's hosted
+  deployment happens to have, clearly separated.
+
 ### Notes
-- The remaining four entries were re-read for the same defect and carry no
-  deployment-state claims: they describe the auth scheme and symbol format only.
+- Five entries remain after `binance` and `okx`, and they split in two:
+  `asterdex`, `kucoin` and `bybit` carry **no** deployment-state claims — auth
+  scheme and symbol format only, which is what a venue manifest should assert.
+  The two `hyperliquid_*` entries **do** carry status, deliberately: that was the
+  point of the previous release, and `hyperliquid_main` being `denied` is a
+  property of the enclave, not of any one deployment.
   Every venue listed has a real handler in the enclave — checked against
   `venue_for_action`, not assumed.
 
