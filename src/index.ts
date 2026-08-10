@@ -16,8 +16,8 @@
  *         "command": "npx",
  *         "args": ["-y", "@usenami/signer-mcp"],
  *         "env": {
- *           "SIGNER_GATEWAY_URL": "https://signer.usenami.io",
- *           "SIGNER_API_TOKEN": "...issued from signer.usenami.io..."
+ *           "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
+ *           "SIGNER_API_TOKEN": "...provisioned at onboarding (invite-based pilot)..."
  *         }
  *       }
  *     }
@@ -46,8 +46,11 @@ import {
 import { getAccountParser } from "./parsers/index.js";
 
 // ── Environment ──
+// Default: the hosted attested demo enclave. NOT signer.usenami.io — that host
+// 301-redirects every path to the marketing landing (HTML), which is how the
+// 0.5.x default broke every gateway tool out of the box (see CHANGELOG 0.6.0).
 const GATEWAY_URL = (
-  process.env.SIGNER_GATEWAY_URL || "https://signer.usenami.io"
+  process.env.SIGNER_GATEWAY_URL || "https://signer-demo.usenami.io:8443"
 ).replace(/\/+$/, "");
 const API_TOKEN = (process.env.SIGNER_API_TOKEN || "").trim();
 // Optional override for fetch timeout — useful when running the smoke test
