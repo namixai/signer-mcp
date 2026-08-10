@@ -58,12 +58,12 @@
     },
     {
       "name": "place_hedge",
-      "description": "Atomic 2-leg market hedge (binance/okx): both legs signed all-or-nothing in the enclave, executed server-side in parallel. Destructive; read result.status (executed/partial/unknown/failed) before acting.",
+      "description": "2-leg market hedge (binance/okx). Signing is atomic (all-or-nothing in the enclave); venue execution is parallel and NOT atomic — read result.status (executed/partial/unknown/failed) before acting. Destructive.",
       "readOnly": false
     },
     {
       "name": "cancel_order",
-      "description": "Cancel an outstanding order by venue order_id (+ symbol for binance/okx). Idempotent.",
+      "description": "Cancel an order by venue order_id + symbol (both required; binance/okx only in v0). Idempotent.",
       "readOnly": false
     }
   ]

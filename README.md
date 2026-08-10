@@ -197,7 +197,7 @@ Read-only. Requires `SIGNER_API_TOKEN`.
 Place a single market or limit order. The enclave signs the payload after checking policy caps.
 
 Args:
-- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main` (check `list_venues` `status` first — `hyperliquid_main` is denied in-enclave)
+- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first — `hyperliquid_main` is denied in-enclave
 - `symbol` — canonical (`BTC`, `BTCUSDT`, `BTC/USDT`) **or** venue-native (`BTC-USDT-SWAP`, `XBTUSDTM`, …). The client translates to the venue's native format and echoes it back.
 - `side` — `buy` | `sell`
 - `qty` — **always base-asset quantity** (e.g. 0.001 for 0.001 BTC). Not USD-notional, not venue contracts. Contract-denominated venues (okx: 1 contract = 0.01 BTC on `BTC-USDT-SWAP`) are converted automatically; sizes off the venue's contract grid are rejected, never silently rounded.
@@ -236,11 +236,13 @@ that was wrong, see CHANGELOG 0.6.0.
 
 ### `place_hedge`
 
-Places an **atomic 2-leg hedge** — both legs signed inside the enclave
-all-or-nothing (a policy denial on either leg means **nothing** executes), then
-the gateway fires both venue calls **server-side in parallel**, so the leg gap
-collapses to the venues' own latency spread and the signed auth headers never
-transit through your client.
+Places a 2-leg hedge with **atomic signing**: both legs are signed inside the
+enclave all-or-nothing (a policy denial on either leg means **nothing** is even
+sent), then the gateway fires both venue calls **server-side in parallel** — the
+leg gap collapses to the venues' own latency spread and the signed auth headers
+never transit through your client. ⚠️ Venue **execution is not atomic**: the
+`partial` and `unknown` statuses below exist precisely because an exchange can
+accept one leg and lose or reject the other.
 
 Args:
 - `legs` — exactly 2, each `{venue, symbol, side, qty, type}`. v1 constraints:
@@ -269,10 +271,13 @@ Read the result's `status` **before anything else**:
 
 Cancels an outstanding order by its venue order id. Idempotent — cancelling an already-filled or non-existent order returns `ok: false` with a venue reason instead of erroring.
 
+Available for `binance | okx` in v0 — other venues have no structured cancel
+route yet and return a clear error (same limitation as `place_order`).
+
 Args:
-- `venue` — same enum as `place_order`
+- `venue` — `binance | okx`
 - `order_id` — the venue id returned by `place_order`
-- `symbol` — venue-native symbol, **required for `binance` and `okx`** (their REST cancel routes need it); optional elsewhere
+- `symbol` — **required** (canonical `BTC` or venue-native; translated exactly like `place_order`) — both venues' REST cancel routes need it alongside `order_id`
 
 Requires `SIGNER_API_TOKEN`.
 

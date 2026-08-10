@@ -45,6 +45,13 @@ describe("callGateway HTML detection", () => {
     );
   });
 
+  it("media types are case-insensitive: Text/HTML is still HTML", async () => {
+    const fetchImpl = fetchReturning("\n\nlanding page…", { contentType: "Text/HTML; charset=utf-8" });
+    await expect(callGateway("/attestation", {}, CFG(fetchImpl))).rejects.toThrow(
+      /returned HTML, not JSON/,
+    );
+  });
+
   it("weakened guard control: valid JSON still parses", async () => {
     const fetchImpl = fetchReturning(JSON.stringify({ ok: 1 }));
     await expect(callGateway("/attestation", {}, CFG(fetchImpl))).resolves.toEqual({ ok: 1 });

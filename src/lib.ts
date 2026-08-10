@@ -86,7 +86,7 @@ export const STATIC_VENUES: VenueEntry[] = [
       "OKX perpetual swap via REST. The enclave implements it and will sign " +
       "once an OKX key is provisioned — provisioning is a property of YOUR " +
       "deployment, not of this manifest. In Usenami's hosted deployment none " +
-      "is provisioned today, so it signs nowhere there. " +
+      "is provisioned (as of release 0.6.0), so it signs nowhere there. " +
       "Symbol format: BTC-USDT-SWAP.",
   },
   {
@@ -229,7 +229,10 @@ export async function callGateway<T>(
       typeof res.headers?.get === "function"
         ? (res.headers.get("content-type") ?? "")
         : "";
-    if (contentType.includes("text/html") || text.trimStart().startsWith("<")) {
+    if (
+      contentType.toLowerCase().includes("text/html") ||
+      text.trimStart().startsWith("<")
+    ) {
       throw new Error(
         `the gateway returned HTML, not JSON (HTTP ${res.status} from ${url})` +
           ` — SIGNER_GATEWAY_URL almost certainly points at a website, not a ` +
