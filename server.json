@@ -1,7 +1,7 @@
 {
   "$schema": "https://registry.modelcontextprotocol.io/schemas/server.json",
   "name": "@usenami/signer-mcp",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "description": "Sign CEX/DEX perp orders (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) from any MCP-aware AI agent with keys that never leave an AWS Nitro Enclave.",
   "homepage": "https://usenami.io/signer",
   "license": "MIT",
@@ -26,11 +26,11 @@
   },
   "env_schema": {
     "SIGNER_GATEWAY_URL": {
-      "description": "Override the Signer gateway URL (default: https://signer.usenami.io)",
+      "description": "Override the Signer gateway URL (default: https://signer-demo.usenami.io:8443 — the hosted attested demo enclave)",
       "required": false
     },
     "SIGNER_API_TOKEN": {
-      "description": "Bearer token issued by usenami.io/signer. Required for everything except list_venues.",
+      "description": "Bearer token provisioned at onboarding (invite-based pilot; no self-serve issuance yet). Required for everything except list_venues and get_attestation.",
       "required": false,
       "secret": true
     }
@@ -38,12 +38,12 @@
   "tools": [
     {
       "name": "list_venues",
-      "description": "List the venues supported by this Signer. Read-only static manifest — no gateway call.",
+      "description": "List the venues supported by this Signer (7 entries incl. per-venue status live/denied). Read-only static manifest — no gateway call.",
       "readOnly": true
     },
     {
       "name": "get_attestation",
-      "description": "Return the AWS Nitro attestation document (PCR0+sig) for the running enclave.",
+      "description": "Return the AWS Nitro attestation document (pcr0_sha384 + base64 COSE_Sign1) for the running enclave. Works without a token.",
       "readOnly": true
     },
     {
@@ -53,12 +53,17 @@
     },
     {
       "name": "place_order",
-      "description": "Sign and submit a single market or limit order. Enclave enforces policy caps.",
+      "description": "Sign and submit a single market or limit order. Enclave enforces policy caps. Orders are real — no implicit testnet routing.",
+      "readOnly": false
+    },
+    {
+      "name": "place_hedge",
+      "description": "Atomic 2-leg market hedge (binance/okx): both legs signed all-or-nothing in the enclave, executed server-side in parallel. Destructive; read result.status (executed/partial/unknown/failed) before acting.",
       "readOnly": false
     },
     {
       "name": "cancel_order",
-      "description": "Cancel an outstanding order by venue order_id. Idempotent.",
+      "description": "Cancel an outstanding order by venue order_id (+ symbol for binance/okx). Idempotent.",
       "readOnly": false
     }
   ]
