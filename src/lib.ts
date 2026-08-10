@@ -5,7 +5,23 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
-export const PACKAGE_VERSION = "0.3.0";
+import { createRequire } from "node:module";
+
+/**
+ * Версия берётся ИЗ МАНИФЕСТА, а не дублируется константой.
+ *
+ * 2026-08-09: опубликованная 0.5.0 печатала «v0.3.0» — package.json подняли,
+ * константу забыли, и релизная проверка этого не поймала, потому что искала
+ * содержимое площадок, а не соответствие версии. Клиент, увидевший чужой номер,
+ * не может отличить «поставилась старая копия» от «пакет врёт о себе».
+ *
+ * createRequire, а не import assertion: последние требуют флагов рантайма на
+ * части поддерживаемых версий Node, а этот путь работает везде, где работает
+ * сам пакет.
+ */
+const pkg = createRequire(import.meta.url)("../package.json") as { version: string };
+
+export const PACKAGE_VERSION: string = pkg.version;
 export const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
 // Venues that have a structured order/cancel route on the gateway
