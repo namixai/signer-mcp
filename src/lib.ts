@@ -72,11 +72,10 @@ export const STATIC_VENUES: VenueEntry[] = [
     auth_scheme: "hmac_sha256",
     status: "live",
     notes:
-      "Binance USD-M futures via REST. Mainnet signing is exercised in " +
-      "production, with OUR OWN funds — founder dogfood since 2026-07-27. " +
-      "External design partners remain on testnet: this is NOT client traffic " +
-      "on mainnet, and should not be read as such. USD-M futures only — spot " +
-      "order signing is not implemented. Symbol format: BTCUSDT (no slash).",
+      "Binance USD-M futures via REST. MAINNET with real funds in the hosted " +
+      "deployment (in production since 2026-07-27; external design partners " +
+      "run on testnet policies). USD-M futures only — spot order signing is " +
+      "not implemented. Symbol format: BTCUSDT (no slash).",
   },
   {
     venue: "okx",
@@ -87,8 +86,7 @@ export const STATIC_VENUES: VenueEntry[] = [
       "OKX perpetual swap via REST. The enclave implements it and will sign " +
       "once an OKX key is provisioned — provisioning is a property of YOUR " +
       "deployment, not of this manifest. In Usenami's hosted deployment none " +
-      "is provisioned today, so it signs nowhere there; the earlier wording " +
-      "\"limited to testnet\" was wrong because it implied testnet worked. " +
+      "is provisioned (as of release 0.6.0), so it signs nowhere there. " +
       "Symbol format: BTC-USDT-SWAP.",
   },
   {
@@ -194,7 +192,8 @@ export async function callGateway<T>(
   if (opts.authRequired && !hasToken) {
     throw new Error(
       `SIGNER_API_TOKEN is required to call ${path}. Set it in your MCP ` +
-        `client config — see README. (Issue tokens at https://usenami.io/signer.)`,
+        `client config — see README. (Access is invite-based during the ` +
+        `pilot; there is no self-serve token issuance yet.)`,
     );
   }
   const url = `${cfg.gatewayUrl.replace(/\/+$/, "")}${path}`;
@@ -220,6 +219,26 @@ export async function callGateway<T>(
       signal: controller.signal,
     });
     const text = await res.text();
+    // A gateway URL that points at a website (the 0.5.x default did — the
+    // host 301-redirected every path to the marketing landing) yields HTML
+    // here, and bare JSON.parse leaks "Unexpected token '<'" to the user,
+    // which reads as a broken install rather than a wrong URL. Name the
+    // actual problem instead.
+    // Defensive: cfg.fetchImpl may be a minimal mock without `headers`.
+    const contentType =
+      typeof res.headers?.get === "function"
+        ? (res.headers.get("content-type") ?? "")
+        : "";
+    if (
+      contentType.toLowerCase().includes("text/html") ||
+      text.trimStart().startsWith("<")
+    ) {
+      throw new Error(
+        `the gateway returned HTML, not JSON (HTTP ${res.status} from ${url})` +
+          ` — SIGNER_GATEWAY_URL almost certainly points at a website, not a ` +
+          `Signer gateway. Check SIGNER_GATEWAY_URL in your MCP client config.`,
+      );
+    }
     if (!res.ok) throw new GatewayError(res.status, text, path);
     return text.length === 0 ? (undefined as unknown as T) : JSON.parse(text);
   } finally {

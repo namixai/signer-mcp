@@ -2,9 +2,9 @@
 
 > Sign CEX orders from any MCP-aware AI agent — keys never leave an AWS Nitro Enclave.
 
-`signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a five-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without ever loading a private key into the agent's process — or yours.
+`signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a six-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without ever loading a private key into the agent's process — or yours.
 
-Status: **v0 (alpha)**. List of venues, attestation, account read, and place/cancel order on testnet.
+Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Orders are real**: which venue and network your orders hit is decided by the policy bound to your token, and on Binance the hosted deployment signs **mainnet orders with real funds** (it has since 2026-07-27). There is no implicit testnet safety net — read [`place_order`](#place_order) before sending anything.
 
 ---
 
@@ -20,7 +20,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
 
 ## Quick start (Claude Desktop)
 
-1. **Get a token.** Sign in at [usenami.io/signer](https://usenami.io/signer) and create an API token. The token is bound to a single policy — set per-venue caps before generating it.
+1. **Get a token.** Access is **invite-based** during the pilot — there is no self-serve signup yet; request access via [usenami.io/signer](https://usenami.io/signer) (contact link at the bottom) and your token is provisioned at onboarding, bound to a policy with per-venue caps. **No token yet?** Steps 2–4 still work: `list_venues` and `get_attestation` need no token.
 2. **Edit `claude_desktop_config.json`.** Path is `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS.
 
    ```json
@@ -30,7 +30,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
          "command": "npx",
          "args": ["-y", "@usenami/signer-mcp"],
          "env": {
-           "SIGNER_GATEWAY_URL": "https://signer.usenami.io",
+           "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
            "SIGNER_API_TOKEN": "sk_live_..."
          }
        }
@@ -38,13 +38,17 @@ If the agent gets compromised, the worst it can do is place orders inside your p
    }
    ```
 
-3. **Restart Claude Desktop** and look for the 🔌 plug icon. You should see five tools listed under `signer`.
+3. **Restart Claude Desktop** and look for the 🔌 plug icon. You should see six tools listed under `signer`.
 4. **Try the read-only tools first.** Ask Claude:
    > "List the venues available through Signer, then return the current attestation document."
 
-   No funds at risk — these don't sign anything.
+   No funds at risk — these don't sign anything, and neither needs a token.
 
-5. **Once you trust the attestation, place a tiny test order:**
+5. **Once you have a token and trust the attestation, you can place a first order — knowingly.**
+   ⚠️ This signs a **real order on the venue your token's policy allows**. For Binance in
+   the hosted deployment that means **mainnet, real money** — 0.001 BTC is a real position,
+   not a testnet exercise. Check `list_venues` `status`/`notes` for the venue first, start
+   with the smallest size your policy allows, and only then:
    > "Get my Binance account, then if I have at least $20 of free margin, place a market buy for 0.001 BTC."
 
 If anything looks wrong, the agent can call `cancel_order` immediately.
@@ -53,10 +57,14 @@ If anything looks wrong, the agent can call `cancel_order` immediately.
 
 ## Quick start (ElizaOS)
 
-ElizaOS agents reach Signer through the generic MCP plugin
-[`@elizaos/plugin-mcp`](https://github.com/elizaos-plugins/plugin-mcp) — no
-Signer-specific plugin required (a native `@usenami/eliza-plugin-signer` may
-come later). Add the plugin and point it at the package over **stdio**:
+ElizaOS has a **native plugin**:
+[`@usenami/plugin-signer`](https://www.npmjs.com/package/@usenami/plugin-signer)
+(same gateway contract — a token issued for one works with the other). Prefer it:
+actions land directly in the agent, plus an attestation provider that keeps the
+current PCR0 in context.
+
+Alternatively, ElizaOS can reach this MCP server through the generic bridge
+[`@elizaos/plugin-mcp`](https://github.com/elizaos-plugins/plugin-mcp) over **stdio**:
 
 ```bash
 npm install @elizaos/plugin-mcp
@@ -75,7 +83,7 @@ Then in your character / agent config:
           "command": "npx",
           "args": ["-y", "@usenami/signer-mcp"],
           "env": {
-            "SIGNER_GATEWAY_URL": "https://signer.usenami.io",
+            "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
             "SIGNER_API_TOKEN": "sk_live_..."
           }
         }
@@ -85,8 +93,8 @@ Then in your character / agent config:
 }
 ```
 
-The agent now exposes the same five tools (`list_venues`, `get_attestation`,
-`get_account`, `place_order`, `cancel_order`). Same trust model: the signing key
+The agent now exposes the same six tools (`list_venues`, `get_attestation`,
+`get_account`, `place_order`, `place_hedge`, `cancel_order`). Same trust model: the signing key
 never enters the Eliza process — start the agent on the read-only tools
 (`list_venues` / `get_attestation`) and verify the attestation before letting it
 place orders.
@@ -99,8 +107,8 @@ Environment variables passed via the `env` block of `claude_desktop_config.json`
 
 | Variable | Required | Default | Notes |
 |---|---|---|---|
-| `SIGNER_GATEWAY_URL` | no | `https://signer.usenami.io` | Override for self-hosted or staging deployments. |
-| `SIGNER_API_TOKEN` | yes (for paid tools) | — | Bearer token issued by usenami.io/signer. `list_venues` works without one; everything else requires it. |
+| `SIGNER_GATEWAY_URL` | no | `https://signer-demo.usenami.io:8443` | The hosted attested demo enclave. Override for self-hosted deployments. |
+| `SIGNER_API_TOKEN` | yes (for account/order tools) | — | Bearer token provisioned at onboarding (invite-based pilot). `list_venues` **and** `get_attestation` work without one; `get_account`, `place_order`, `place_hedge`, `cancel_order` require it. |
 | `SIGNER_FETCH_TIMEOUT_MS` | no | `30000` | Per-request fetch timeout in ms. Lower for CI / smoke tests; raise on slow links. Must be positive integer. |
 
 The MCP server itself stores nothing on disk. Tokens are read from environment on startup and held in memory for the lifetime of the process — kill the agent, the token goes with it.
@@ -120,23 +128,30 @@ Returns the static manifest of venues this Signer can sign for. **Read-only**, d
       "venue": "binance",
       "asset_class": "perp",
       "auth_scheme": "hmac_sha256",
+      "status": "live",
       "notes": "..."
     }
   ],
-  "count": 6
+  "count": 7
 }
 ```
 
+Every entry carries a `status`: `live` (the enclave will sign for it) or `denied`
+(the enclave refuses by policy — supplying credentials will not change it). Some
+entries add a `network` field (`bsc`, `hyperliquid-testnet`, …). **Read `status`
+and `notes` before choosing a venue.**
+
 #### Supported venues
 
-| `venue` id          | asset class | auth scheme   | symbol example  | notes |
-|---------------------|-------------|---------------|-----------------|-------|
-| `binance`           | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures |
-| `okx`               | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap |
-| `asterdex`          | perp        | eip712 (bsc)  | `BTC-USD`       | Asterdex on-chain perp (BSC) |
-| `kucoin`            | perp        | hmac_sha256   | `XBTUSDTM`      | KuCoin Futures (HMAC + encrypted passphrase); qty in contracts |
-| `bybit`             | perp        | hmac_sha256   | `BTCUSDT`       | Bybit V5 linear (`category=linear`) |
-| `hyperliquid_main`  | perp        | eip712 (hyperliquid) | `BTC`    | Hyperliquid L1 perp; account read is the public `clearinghouseState` |
+| `venue` id          | status | asset class | auth scheme   | symbol example  | notes |
+|---------------------|--------|-------------|---------------|-----------------|-------|
+| `binance`           | live   | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures. ⚠️ **Mainnet, real funds** in the hosted deployment (since 2026-07-27) |
+| `okx`               | live   | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap. Signs only where an OKX key is provisioned — the hosted deployment has none today, so there it signs nowhere |
+| `asterdex`          | live   | perp        | eip712 (bsc)  | `BTC-USD`       | Asterdex on-chain perp (BSC) |
+| `kucoin`            | live   | perp        | hmac_sha256   | `XBTUSDTM`      | KuCoin Futures (HMAC + encrypted passphrase); qty in contracts |
+| `bybit`             | live   | perp        | hmac_sha256   | `BTCUSDT`       | Bybit V5 linear (`category=linear`) |
+| `hyperliquid_testnet` | live | perp        | eip712 (hyperliquid) | `BTC`    | **The Hyperliquid path that actually signs.** Same enclave code as mainnet, testnet phantom-agent source |
+| `hyperliquid_main`  | **denied** | perp    | eip712 (hyperliquid) | `BTC`    | **Denied inside the enclave** — a policy denial, not a missing configuration; supplying credentials will not change it. Account read is the public `clearinghouseState` |
 
 The agent config block is identical for every venue — point `SIGNER_GATEWAY_URL` at your Signer and set `SIGNER_API_TOKEN`. Which venues a given token may trade is bound server-side to that token's policy; `list_venues` reports the full set the gateway can sign, not your per-token allow-list.
 
@@ -146,15 +161,18 @@ Returns the Nitro attestation document for the currently-running enclave. The PC
 
 ```json
 {
-  "pcr0": "...sha384 hex...",
-  "pcr1": "...",
-  "pcr2": "...",
-  "signature": "...AWS-issued...",
-  "issued_at": "2026-05-31T18:00:00Z"
+  "pcr0_sha384": "...sha384 hex...",
+  "attestation_doc_b64": "...base64 COSE_Sign1, signed by AWS Nitro...",
+  "registered_onchain": true,
+  "timestamp_ms": 1785847208571
 }
 ```
 
-Read-only.
+`pcr0_sha384` is a convenience copy; the evidence is `attestation_doc_b64` — the
+AWS-signed COSE document containing all PCRs. Trust the document, not the field
+printed beside it.
+
+Read-only, works without a token.
 
 ### `get_account`
 
@@ -179,7 +197,7 @@ Read-only. Requires `SIGNER_API_TOKEN`.
 Place a single market or limit order. The enclave signs the payload after checking policy caps.
 
 Args:
-- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_main`
+- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first — `hyperliquid_main` is denied in-enclave
 - `symbol` — canonical (`BTC`, `BTCUSDT`, `BTC/USDT`) **or** venue-native (`BTC-USDT-SWAP`, `XBTUSDTM`, …). The client translates to the venue's native format and echoes it back.
 - `side` — `buy` | `sell`
 - `qty` — **always base-asset quantity** (e.g. 0.001 for 0.001 BTC). Not USD-notional, not venue contracts. Contract-denominated venues (okx: 1 contract = 0.01 BTC on `BTC-USDT-SWAP`) are converted automatically; sizes off the venue's contract grid are rejected, never silently rounded.
@@ -208,15 +226,58 @@ The result includes a `translation` echo — check `translation.sent` to see the
 }
 ```
 
-**Destructive.** Requires `SIGNER_API_TOKEN`. v0 routes Binance/OKX to testnet until pilot graduates.
+**Destructive.** Requires `SIGNER_API_TOKEN`. ⚠️ **Orders go where your token's
+policy sends them — there is no implicit testnet routing.** On Binance the hosted
+deployment signs **mainnet orders with real funds** (since 2026-07-27); OKX signs
+only where an OKX key is provisioned (the hosted deployment has none today);
+Hyperliquid signs on `hyperliquid_testnet` and is denied on `hyperliquid_main`.
+An earlier revision of this section said "v0 routes Binance/OKX to testnet" —
+that was wrong, see CHANGELOG 0.6.0.
+
+### `place_hedge`
+
+Places a 2-leg hedge with **atomic signing**: both legs are signed inside the
+enclave all-or-nothing (a policy denial on either leg means **nothing** is even
+sent), then the gateway fires both venue calls **server-side in parallel** — the
+leg gap collapses to the venues' own latency spread and the signed auth headers
+never transit through your client. ⚠️ Venue **execution is not atomic**: the
+`partial` and `unknown` statuses below exist precisely because an exchange can
+accept one leg and lose or reject the other.
+
+Args:
+- `legs` — exactly 2, each `{venue, symbol, side, qty, type}`. v1 constraints:
+  `type: "market"` only (a resting limit leg would let "executed" hide an
+  unfilled leg — use `place_order` for limits) and venues limited to
+  `binance | okx`. Typical hedge: same symbol, opposite sides, equal
+  base-asset qty on two venues.
+- Symbols and `qty` use the same canonical/base-asset translation as
+  `place_order`; per-leg `translations` are echoed back.
+
+Read the result's `status` **before anything else**:
+- `executed` — both legs live.
+- `partial` — 🔴 **exactly one leg live: the position is NAKED.** Repair by
+  closing the live leg or re-placing the `rejected` one. Never re-place a leg
+  whose outcome is `unknown`.
+- `unknown` — 🔴 a leg's receipt was lost (timeout / venue 5xx) — that order
+  **may be live**. Do NOT retry `place_hedge`; reconcile first via
+  `get_account` on both venues.
+- `failed` — both legs definitively rejected, nothing live, safe to fix and retry.
+
+**Destructive** (moves real positions on two venues at once). Requires
+`SIGNER_API_TOKEN`. Gateways older than the `/hedge` endpoint return a clear
+"use two place_order calls" error.
 
 ### `cancel_order`
 
 Cancels an outstanding order by its venue order id. Idempotent — cancelling an already-filled or non-existent order returns `ok: false` with a venue reason instead of erroring.
 
+Available for `binance | okx` in v0 — other venues have no structured cancel
+route yet and return a clear error (same limitation as `place_order`).
+
 Args:
-- `venue` — same enum as `place_order`
+- `venue` — `binance | okx`
 - `order_id` — the venue id returned by `place_order`
+- `symbol` — **required** (canonical `BTC` or venue-native; translated exactly like `place_order`) — both venues' REST cancel routes need it alongside `order_id`
 
 Requires `SIGNER_API_TOKEN`.
 
@@ -226,10 +287,10 @@ Requires `SIGNER_API_TOKEN`.
 
 A trustworthy Signer is one whose enclave measurement matches a build you can audit. The workflow:
 
-1. Call `get_attestation` and copy the returned `pcr0`.
+1. Call `get_attestation` and copy the returned `pcr0_sha384` (or, stricter, read PCR0 out of the signed `attestation_doc_b64` itself).
 2. Visit [usenami.io/signer/attestations](https://usenami.io/signer/attestations).
 3. Cross-reference the PCR0 against the published build for the current production version.
-4. Optionally rebuild the EIF from source (instructions on the same page) and verify the SHA384 hash yourself.
+4. Optionally rebuild the EIF from source and verify the measurement yourself — step-by-step instructions: [VERIFY-SIGNER-YOURSELF](https://github.com/namixai/signer/blob/main/docs/VERIFY-SIGNER-YOURSELF.md).
 
 If the published PCR0 doesn't match what `get_attestation` returns, **don't trade**. Open an issue.
 
@@ -242,7 +303,7 @@ v0 keeps the surface deliberately tight:
 - No multi-tenant: one account per venue per token.
 - No UPL editing UI: policies are set out-of-band on usenami.io/signer.
 - No WebSocket / streaming tools — REST only.
-- No cross-venue routing (`place_order` takes one venue).
+- No cross-venue routing (`place_order` takes one venue; the only multi-venue tool is the fixed 2-leg `place_hedge`).
 - No leverage configuration (`set_leverage`) — uses account defaults.
 - No withdrawals / transfers (closest is `cancel_order`).
 - No TWAP / iceberg — single-shot orders only.
@@ -261,8 +322,8 @@ npm install
 # typecheck + build
 npm run build
 
-# run from source against staging
-SIGNER_GATEWAY_URL=https://staging.signer.usenami.io \
+# run from source against the hosted demo enclave
+SIGNER_GATEWAY_URL=https://signer-demo.usenami.io:8443 \
 SIGNER_API_TOKEN=sk_test_... \
 npm run dev
 ```
