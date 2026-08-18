@@ -85,18 +85,46 @@ describe("list_venues", () => {
       "hyperliquid_testnet",
       "hyperliquid_main",
     ]);
-    // Pin WHICH venue is denied, not merely that a status field parses. An
-    // assertion that accepted any status would stay green if hyperliquid_main
-    // flipped back to "live" — the exact regression this manifest exists to
-    // prevent, and the one that shipped for forty days.
+    // This assertion used to pin `hyperliquid_main` to "denied", with a comment
+    // saying that pinning the VALUE stops the claim from silently weakening. It
+    // did the opposite. ROT-1 removed the in-enclave refusal on 2026-08-05, a
+    // live mainnet order went through on 2026-08-16 (oid 517580639590, accepted
+    // then cancelled), and this test held the manifest green the whole time —
+    // because a pinned live value cannot tell "we regressed" apart from "the
+    // world moved". It fails only when the code catches up with reality, which
+    // is the wrong way round.
+    //
+    // So pin the INVARIANT instead: `denied` means an unconditional, code-level
+    // refusal that no policy, flag or credential can lift. Nothing meets that bar
+    // today. Adding an entry back here is meant to be the moment someone has to
+    // justify it.
     const byVenue = Object.fromEntries(
       body.venues.map((v: any) => [v.venue, v.status]),
     );
-    expect(byVenue["hyperliquid_main"]).toBe("denied");
     expect(byVenue["hyperliquid_testnet"]).toBe("live");
     expect(
       body.venues.filter((v: any) => v.status === "denied").map((v: any) => v.venue),
-    ).toEqual(["hyperliquid_main"]);
+    ).toEqual([]);
+
+    // Anti-rot. This manifest is COMPILED INTO the package, so any sentence in it
+    // about live or per-deployment state is a claim that goes false the moment a
+    // box changes — and the reader has no way to tell, because the package looks
+    // the same. Two shipped: "MAINNET IS DENIED INSIDE THE ENCLAVE" (false since
+    // ROT-1) and "none is provisioned (as of release 0.6.0)" (false the day an
+    // OKX key is sealed). The field doc already said deployment state does not
+    // belong here; prose is where it crept back in, so guard the prose.
+    //
+    // The line between allowed and not is ASSERTION vs CONDITION, and it is drawn
+    // here because the first draft of this guard failed on its own replacement
+    // text: "will sign once an OKX key is provisioned" is a statement about the
+    // CONTRACT and must stay; "none is provisioned" is a statement about one BOX
+    // and must not. Naming a specific deployment is the surest tell, so it is
+    // matched directly.
+    const VOLATILE =
+      /\b(none|no key|nothing)\s+is\s+provisioned\b|\bnot\s+provisioned\b|hosted deployment|as of release|as of \d{4}|DENIED INSIDE|will not change it|signs nowhere/i;
+    for (const v of body.venues as any[]) {
+      expect(v.notes ?? "", `venue ${v.venue} notes`).not.toMatch(VOLATILE);
+    }
     expect(body.venues[0].auth_scheme).toBe("hmac_sha256");
     // All 6 venues carry the three required manifest fields.
     for (const v of body.venues) {

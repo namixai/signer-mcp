@@ -4,7 +4,7 @@
 
 `signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a six-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without ever loading a private key into the agent's process — or yours.
 
-Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Orders are real**: which venue and network your orders hit is decided by the policy bound to your token, and on Binance the hosted deployment signs **mainnet orders with real funds** (it has since 2026-07-27). There is no implicit testnet safety net — read [`place_order`](#place_order) before sending anything.
+Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Assume orders are real.** Which venue and network your orders hit is decided by the policy bound to your token, and neither this page nor `list_venues` can tell you which — ask whoever issued the token. There is no implicit testnet safety net, so treat every order as mainnet money until you have confirmed otherwise. Read [`place_order`](#place_order) before sending anything.
 
 ---
 
@@ -20,7 +20,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
 
 ## Quick start (Claude Desktop)
 
-1. **Get a token.** Access is **invite-based** during the pilot — there is no self-serve signup yet; request access via [usenami.io/signer](https://usenami.io/signer) (contact link at the bottom) and your token is provisioned at onboarding, bound to a policy with per-venue caps. **No token yet?** Steps 2–4 still work: `list_venues` and `get_attestation` need no token.
+1. **Get a token.** Access is **invite-based** during the pilot — there is no self-serve signup yet; request access via [usenami.io/signer](https://usenami.io/signer) (contact link at the bottom) and your token is provisioned at onboarding, bound to a policy with per-venue caps. **No token yet?** Steps 2–4 still work: `list_venues` and `get_attestation` need no token. Note what each one actually does, because only one of them talks to us: `get_attestation` fetches a live, NSM-signed document **from the gateway**, while `list_venues` answers from a static manifest compiled into this package and makes **no network call at all**.
 2. **Edit `claude_desktop_config.json`.** Path is `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS.
 
    ```json
@@ -28,7 +28,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
      "mcpServers": {
        "signer": {
          "command": "npx",
-         "args": ["-y", "@usenami/signer-mcp"],
+         "args": ["-y", "@usenami/signer-mcp@^0.6.0"],
          "env": {
            "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
            "SIGNER_API_TOKEN": "sk_live_..."
@@ -38,6 +38,13 @@ If the agent gets compromised, the worst it can do is place orders inside your p
    }
    ```
 
+> **Pin `@^0.6.0` — earlier versions do not work out of the box.** Every published version up to
+> and including `0.5.0` defaults `SIGNER_GATEWAY_URL` to `https://signer.usenami.io`, which
+> `301`-redirects every path to the marketing landing page. The network tools then receive HTML
+> and die with `Unexpected token '<'`. `0.6.0` changed the default to the demo gateway. If you
+> are pasting a config from an older post or cached answer, check this first — the symptom looks
+> like a broken server and is a stale default.
+
 3. **Restart Claude Desktop** and look for the 🔌 plug icon. You should see six tools listed under `signer`.
 4. **Try the read-only tools first.** Ask Claude:
    > "List the venues available through Signer, then return the current attestation document."
@@ -45,10 +52,10 @@ If the agent gets compromised, the worst it can do is place orders inside your p
    No funds at risk — these don't sign anything, and neither needs a token.
 
 5. **Once you have a token and trust the attestation, you can place a first order — knowingly.**
-   ⚠️ This signs a **real order on the venue your token's policy allows**. For Binance in
-   the hosted deployment that means **mainnet, real money** — 0.001 BTC is a real position,
-   not a testnet exercise. Check `list_venues` `status`/`notes` for the venue first, start
-   with the smallest size your policy allows, and only then:
+   ⚠️ This signs a **real order on the venue your token's policy allows**, and you should
+   assume that means **mainnet, real money** — 0.001 BTC is a real position, not a testnet
+   exercise, unless the person who issued your token told you otherwise. Start with the
+   smallest size your policy allows, and only then:
    > "Get my Binance account, then if I have at least $20 of free margin, place a market buy for 0.001 BTC."
 
 If anything looks wrong, the agent can call `cancel_order` immediately.
@@ -81,7 +88,7 @@ Then in your character / agent config:
         "signer": {
           "type": "stdio",
           "command": "npx",
-          "args": ["-y", "@usenami/signer-mcp"],
+          "args": ["-y", "@usenami/signer-mcp@^0.6.0"],
           "env": {
             "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
             "SIGNER_API_TOKEN": "sk_live_..."
@@ -97,7 +104,9 @@ The agent now exposes the same six tools (`list_venues`, `get_attestation`,
 `get_account`, `place_order`, `place_hedge`, `cancel_order`). Same trust model: the signing key
 never enters the Eliza process — start the agent on the read-only tools
 (`list_venues` / `get_attestation`) and verify the attestation before letting it
-place orders.
+place orders. Only `get_attestation` reaches the gateway; `list_venues` is served from a
+static manifest inside the package, so a green `list_venues` says nothing about whether
+your gateway is reachable.
 
 ---
 
@@ -108,7 +117,7 @@ Environment variables passed via the `env` block of `claude_desktop_config.json`
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `SIGNER_GATEWAY_URL` | no | `https://signer-demo.usenami.io:8443` | The hosted attested demo enclave. Override for self-hosted deployments. |
-| `SIGNER_API_TOKEN` | yes (for account/order tools) | — | Bearer token provisioned at onboarding (invite-based pilot). `list_venues` **and** `get_attestation` work without one; `get_account`, `place_order`, `place_hedge`, `cancel_order` require it. |
+| `SIGNER_API_TOKEN` | yes (for account/order tools) | — | Bearer token provisioned at onboarding (invite-based pilot). `list_venues` **and** `get_attestation` work without one — but only `get_attestation` contacts the gateway (`list_venues` is static, see its section below); `get_account`, `place_order`, `place_hedge`, `cancel_order` require it. |
 | `SIGNER_FETCH_TIMEOUT_MS` | no | `30000` | Per-request fetch timeout in ms. Lower for CI / smoke tests; raise on slow links. Must be positive integer. |
 
 The MCP server itself stores nothing on disk. Tokens are read from environment on startup and held in memory for the lifetime of the process — kill the agent, the token goes with it.
@@ -145,13 +154,13 @@ and `notes` before choosing a venue.**
 
 | `venue` id          | status | asset class | auth scheme   | symbol example  | notes |
 |---------------------|--------|-------------|---------------|-----------------|-------|
-| `binance`           | live   | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures. ⚠️ **Mainnet, real funds** in the hosted deployment (since 2026-07-27) |
-| `okx`               | live   | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap. Signs only where an OKX key is provisioned — the hosted deployment has none today, so there it signs nowhere |
+| `binance`           | live   | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures. ⚠️ Assume **mainnet, real funds** — the network is set by your token's policy, not by this table |
+| `okx`               | live   | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap. Signs where an OKX key is provisioned; only the gateway you point at can say whether one is. Sizes are in **contracts** (1 `BTC-USDT-SWAP` = 0.01 BTC) |
 | `asterdex`          | live   | perp        | eip712 (bsc)  | `BTC-USD`       | Asterdex on-chain perp (BSC) |
 | `kucoin`            | live   | perp        | hmac_sha256   | `XBTUSDTM`      | KuCoin Futures (HMAC + encrypted passphrase); qty in contracts |
 | `bybit`             | live   | perp        | hmac_sha256   | `BTCUSDT`       | Bybit V5 linear (`category=linear`) |
-| `hyperliquid_testnet` | live | perp        | eip712 (hyperliquid) | `BTC`    | **The Hyperliquid path that actually signs.** Same enclave code as mainnet, testnet phantom-agent source |
-| `hyperliquid_main`  | **denied** | perp    | eip712 (hyperliquid) | `BTC`    | **Denied inside the enclave** — a policy denial, not a missing configuration; supplying credentials will not change it. Account read is the public `clearinghouseState` |
+| `hyperliquid_testnet` | live | perp        | eip712 (hyperliquid) | `BTC`    | Same enclave code as mainnet, testnet phantom-agent source. Not reachable via `place_order`/`cancel_order` in v0 |
+| `hyperliquid_main`  | live    | perp    | eip712 (hyperliquid) | `BTC`    | Order and cancel only — the enclave has no withdrawal or transfer action for this venue. Mainnet carries an unconditional money floor (authority-signed policy + binding per-asset caps by integer asset index), not relaxable by a build flag. Account read is the public `clearinghouseState` |
 
 The agent config block is identical for every venue — point `SIGNER_GATEWAY_URL` at your Signer and set `SIGNER_API_TOKEN`. Which venues a given token may trade is bound server-side to that token's policy; `list_venues` reports the full set the gateway can sign, not your per-token allow-list.
 
@@ -197,7 +206,7 @@ Read-only. Requires `SIGNER_API_TOKEN`.
 Place a single market or limit order. The enclave signs the payload after checking policy caps.
 
 Args:
-- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first — `hyperliquid_main` is denied in-enclave
+- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first
 - `symbol` — canonical (`BTC`, `BTCUSDT`, `BTC/USDT`) **or** venue-native (`BTC-USDT-SWAP`, `XBTUSDTM`, …). The client translates to the venue's native format and echoes it back.
 - `side` — `buy` | `sell`
 - `qty` — **always base-asset quantity** (e.g. 0.001 for 0.001 BTC). Not USD-notional, not venue contracts. Contract-denominated venues (okx: 1 contract = 0.01 BTC on `BTC-USDT-SWAP`) are converted automatically; sizes off the venue's contract grid are rejected, never silently rounded.
@@ -228,9 +237,13 @@ The result includes a `translation` echo — check `translation.sent` to see the
 
 **Destructive.** Requires `SIGNER_API_TOKEN`. ⚠️ **Orders go where your token's
 policy sends them — there is no implicit testnet routing.** On Binance the hosted
-deployment signs **mainnet orders with real funds** (since 2026-07-27); OKX signs
-only where an OKX key is provisioned (the hosted deployment has none today);
-Hyperliquid signs on `hyperliquid_testnet` and is denied on `hyperliquid_main`.
+whether a given gateway signs against mainnet or testnet, and with what caps, is a property
+of that deployment and of your token's policy — this page cannot tell you, and neither can
+`list_venues`. On Hyperliquid the enclave signs both testnet and mainnet, and mainnet
+additionally requires an authority-signed policy carrying binding per-asset caps — a blob
+without them is refused at load, unconditionally. Note that **neither** Hyperliquid venue is
+reachable through `place_order` / `cancel_order` in v0: those carry structured routes for
+`binance` and `okx` only.
 An earlier revision of this section said "v0 routes Binance/OKX to testnet" —
 that was wrong, see CHANGELOG 0.6.0.
 
