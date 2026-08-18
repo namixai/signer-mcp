@@ -20,7 +20,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
 
 ## Quick start (Claude Desktop)
 
-1. **Get a token.** Access is **invite-based** during the pilot — there is no self-serve signup yet; request access via [usenami.io/signer](https://usenami.io/signer) (contact link at the bottom) and your token is provisioned at onboarding, bound to a policy with per-venue caps. **No token yet?** Steps 2–4 still work: `list_venues` and `get_attestation` need no token.
+1. **Get a token.** Access is **invite-based** during the pilot — there is no self-serve signup yet; request access via [usenami.io/signer](https://usenami.io/signer) (contact link at the bottom) and your token is provisioned at onboarding, bound to a policy with per-venue caps. **No token yet?** Steps 2–4 still work: `list_venues` and `get_attestation` need no token. Note what each one actually does, because only one of them talks to us: `get_attestation` fetches a live, NSM-signed document **from the gateway**, while `list_venues` answers from a static manifest compiled into this package and makes **no network call at all**.
 2. **Edit `claude_desktop_config.json`.** Path is `~/Library/Application Support/Claude/claude_desktop_config.json` on macOS.
 
    ```json
@@ -28,7 +28,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
      "mcpServers": {
        "signer": {
          "command": "npx",
-         "args": ["-y", "@usenami/signer-mcp"],
+         "args": ["-y", "@usenami/signer-mcp@^0.6.0"],
          "env": {
            "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
            "SIGNER_API_TOKEN": "sk_live_..."
@@ -37,6 +37,13 @@ If the agent gets compromised, the worst it can do is place orders inside your p
      }
    }
    ```
+
+> **Pin `@^0.6.0` — earlier versions do not work out of the box.** Every published version up to
+> and including `0.5.0` defaults `SIGNER_GATEWAY_URL` to `https://signer.usenami.io`, which
+> `301`-redirects every path to the marketing landing page. The network tools then receive HTML
+> and die with `Unexpected token '<'`. `0.6.0` changed the default to the demo gateway. If you
+> are pasting a config from an older post or cached answer, check this first — the symptom looks
+> like a broken server and is a stale default.
 
 3. **Restart Claude Desktop** and look for the 🔌 plug icon. You should see six tools listed under `signer`.
 4. **Try the read-only tools first.** Ask Claude:
@@ -81,7 +88,7 @@ Then in your character / agent config:
         "signer": {
           "type": "stdio",
           "command": "npx",
-          "args": ["-y", "@usenami/signer-mcp"],
+          "args": ["-y", "@usenami/signer-mcp@^0.6.0"],
           "env": {
             "SIGNER_GATEWAY_URL": "https://signer-demo.usenami.io:8443",
             "SIGNER_API_TOKEN": "sk_live_..."
@@ -97,7 +104,9 @@ The agent now exposes the same six tools (`list_venues`, `get_attestation`,
 `get_account`, `place_order`, `place_hedge`, `cancel_order`). Same trust model: the signing key
 never enters the Eliza process — start the agent on the read-only tools
 (`list_venues` / `get_attestation`) and verify the attestation before letting it
-place orders.
+place orders. Only `get_attestation` reaches the gateway; `list_venues` is served from a
+static manifest inside the package, so a green `list_venues` says nothing about whether
+your gateway is reachable.
 
 ---
 
@@ -108,7 +117,7 @@ Environment variables passed via the `env` block of `claude_desktop_config.json`
 | Variable | Required | Default | Notes |
 |---|---|---|---|
 | `SIGNER_GATEWAY_URL` | no | `https://signer-demo.usenami.io:8443` | The hosted attested demo enclave. Override for self-hosted deployments. |
-| `SIGNER_API_TOKEN` | yes (for account/order tools) | — | Bearer token provisioned at onboarding (invite-based pilot). `list_venues` **and** `get_attestation` work without one; `get_account`, `place_order`, `place_hedge`, `cancel_order` require it. |
+| `SIGNER_API_TOKEN` | yes (for account/order tools) | — | Bearer token provisioned at onboarding (invite-based pilot). `list_venues` **and** `get_attestation` work without one — but only `get_attestation` contacts the gateway (`list_venues` is static, see its section below); `get_account`, `place_order`, `place_hedge`, `cancel_order` require it. |
 | `SIGNER_FETCH_TIMEOUT_MS` | no | `30000` | Per-request fetch timeout in ms. Lower for CI / smoke tests; raise on slow links. Must be positive integer. |
 
 The MCP server itself stores nothing on disk. Tokens are read from environment on startup and held in memory for the lifetime of the process — kill the agent, the token goes with it.
