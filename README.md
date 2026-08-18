@@ -237,11 +237,13 @@ The result includes a `translation` echo — check `translation.sent` to see the
 
 **Destructive.** Requires `SIGNER_API_TOKEN`. ⚠️ **Orders go where your token's
 policy sends them — there is no implicit testnet routing.** On Binance the hosted
-deployment signs **mainnet orders with real funds** (since 2026-07-27); OKX signs
-only where an OKX key is provisioned (the hosted deployment has none today);
-Hyperliquid signs on both `hyperliquid_testnet` and `hyperliquid_main`. Mainnet additionally
-requires an authority-signed policy carrying binding per-asset caps — a blob without them is
-refused at load, unconditionally.
+whether a given gateway signs against mainnet or testnet, and with what caps, is a property
+of that deployment and of your token's policy — this page cannot tell you, and neither can
+`list_venues`. On Hyperliquid the enclave signs both testnet and mainnet, and mainnet
+additionally requires an authority-signed policy carrying binding per-asset caps — a blob
+without them is refused at load, unconditionally. Note that **neither** Hyperliquid venue is
+reachable through `place_order` / `cancel_order` in v0: those carry structured routes for
+`binance` and `okx` only.
 An earlier revision of this section said "v0 routes Binance/OKX to testnet" —
 that was wrong, see CHANGELOG 0.6.0.
 

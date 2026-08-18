@@ -135,9 +135,11 @@ export const STATIC_VENUES: VenueEntry[] = [
     status: "live",
     network: "hyperliquid-testnet",
     notes:
-      "Hyperliquid testnet perp, EIP-712 action signing. This is the Hyperliquid " +
-      "path that actually signs — same enclave code as mainnet, differing only in " +
-      "the phantom-agent source byte. Symbol format: bare coin name, e.g. BTC.",
+      "Hyperliquid testnet perp, EIP-712 action signing. Same enclave code as " +
+      "mainnet, differing only in the phantom-agent source byte. Like mainnet, NOT " +
+      "reachable through this package's order tools — place_order and cancel_order " +
+      "carry structured routes for binance and okx only in v0. Symbol format: bare " +
+      "coin name, e.g. BTC.",
   },
   {
     venue: "hyperliquid_main",
@@ -152,7 +154,10 @@ export const STATIC_VENUES: VenueEntry[] = [
       "the sealed policy must be authority-signed and must carry binding per-asset " +
       "size caps, keyed by Hyperliquid's integer asset index, and that floor is not " +
       "relaxable by a build flag. Hyperliquid TESTNET signs through the same code " +
-      "path. Symbol format: bare coin name, e.g. BTC.",
+      "path. NOT reachable through this package's order tools: place_order and " +
+      "cancel_order carry structured routes for binance and okx only in v0, so a " +
+      "Hyperliquid request returns a route error. The signing capability described " +
+      "here is the enclave's, not this MCP's. Symbol format: bare coin name, e.g. BTC.",
   },
 ];
 
