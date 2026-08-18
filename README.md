@@ -4,7 +4,7 @@
 
 `signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a six-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without ever loading a private key into the agent's process — or yours.
 
-Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Orders are real**: which venue and network your orders hit is decided by the policy bound to your token, and on Binance the hosted deployment signs **mainnet orders with real funds** (it has since 2026-07-27). There is no implicit testnet safety net — read [`place_order`](#place_order) before sending anything.
+Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Assume orders are real.** Which venue and network your orders hit is decided by the policy bound to your token, and neither this page nor `list_venues` can tell you which — ask whoever issued the token. There is no implicit testnet safety net, so treat every order as mainnet money until you have confirmed otherwise. Read [`place_order`](#place_order) before sending anything.
 
 ---
 
@@ -52,10 +52,10 @@ If the agent gets compromised, the worst it can do is place orders inside your p
    No funds at risk — these don't sign anything, and neither needs a token.
 
 5. **Once you have a token and trust the attestation, you can place a first order — knowingly.**
-   ⚠️ This signs a **real order on the venue your token's policy allows**. For Binance in
-   the hosted deployment that means **mainnet, real money** — 0.001 BTC is a real position,
-   not a testnet exercise. Check `list_venues` `status`/`notes` for the venue first, start
-   with the smallest size your policy allows, and only then:
+   ⚠️ This signs a **real order on the venue your token's policy allows**, and you should
+   assume that means **mainnet, real money** — 0.001 BTC is a real position, not a testnet
+   exercise, unless the person who issued your token told you otherwise. Start with the
+   smallest size your policy allows, and only then:
    > "Get my Binance account, then if I have at least $20 of free margin, place a market buy for 0.001 BTC."
 
 If anything looks wrong, the agent can call `cancel_order` immediately.
@@ -154,12 +154,12 @@ and `notes` before choosing a venue.**
 
 | `venue` id          | status | asset class | auth scheme   | symbol example  | notes |
 |---------------------|--------|-------------|---------------|-----------------|-------|
-| `binance`           | live   | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures. ⚠️ **Mainnet, real funds** in the hosted deployment (since 2026-07-27) |
-| `okx`               | live   | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap. Signs only where an OKX key is provisioned — the hosted deployment has none today, so there it signs nowhere |
+| `binance`           | live   | perp        | hmac_sha256   | `BTCUSDT`       | Binance USD-M futures. ⚠️ Assume **mainnet, real funds** — the network is set by your token's policy, not by this table |
+| `okx`               | live   | perp        | hmac_sha256   | `BTC-USDT-SWAP` | OKX perpetual swap. Signs where an OKX key is provisioned; only the gateway you point at can say whether one is. Sizes are in **contracts** (1 `BTC-USDT-SWAP` = 0.01 BTC) |
 | `asterdex`          | live   | perp        | eip712 (bsc)  | `BTC-USD`       | Asterdex on-chain perp (BSC) |
 | `kucoin`            | live   | perp        | hmac_sha256   | `XBTUSDTM`      | KuCoin Futures (HMAC + encrypted passphrase); qty in contracts |
 | `bybit`             | live   | perp        | hmac_sha256   | `BTCUSDT`       | Bybit V5 linear (`category=linear`) |
-| `hyperliquid_testnet` | live | perp        | eip712 (hyperliquid) | `BTC`    | **The Hyperliquid path that actually signs.** Same enclave code as mainnet, testnet phantom-agent source |
+| `hyperliquid_testnet` | live | perp        | eip712 (hyperliquid) | `BTC`    | Same enclave code as mainnet, testnet phantom-agent source. Not reachable via `place_order`/`cancel_order` in v0 |
 | `hyperliquid_main`  | live    | perp    | eip712 (hyperliquid) | `BTC`    | Order and cancel only — the enclave has no withdrawal or transfer action for this venue. Mainnet carries an unconditional money floor (authority-signed policy + binding per-asset caps by integer asset index), not relaxable by a build flag. Account read is the public `clearinghouseState` |
 
 The agent config block is identical for every venue — point `SIGNER_GATEWAY_URL` at your Signer and set `SIGNER_API_TOKEN`. Which venues a given token may trade is bound server-side to that token's policy; `list_venues` reports the full set the gateway can sign, not your per-token allow-list.
