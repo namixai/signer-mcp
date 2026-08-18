@@ -60,6 +60,14 @@ export interface VenueEntry {
    * moment a key is added — the exact failure this field was introduced to stop.
    * Whether a key exists is answered by the gateway, not by a constant shipped
    * in a package.
+   *
+   * NOTHING currently carries `denied`, and adding it back needs a HIGHER bar
+   * than "true today": an unconditional, code-level refusal that no policy,
+   * flag or credential can lift. `hyperliquid_main` carried it for months after
+   * ROT-1 had removed exactly such a refusal, and a live mainnet order went
+   * through on 2026-08-16 while this manifest was still telling every agent the
+   * venue was refused before key material is even loaded. A security claim that
+   * outlives its mechanism is worse than no claim: the reader plans around it.
    */
   status: "live" | "denied";
   notes?: string;
@@ -72,9 +80,10 @@ export const STATIC_VENUES: VenueEntry[] = [
     auth_scheme: "hmac_sha256",
     status: "live",
     notes:
-      "Binance USD-M futures via REST. MAINNET with real funds in the hosted " +
-      "deployment (in production since 2026-07-27; external design partners " +
-      "run on testnet policies). USD-M futures only — spot order signing is " +
+      "Binance USD-M futures via REST. Whether the gateway you point at signs " +
+      "against mainnet or testnet, and under what caps, is a property of that " +
+      "deployment and of your token's policy — this manifest cannot tell you, " +
+      "and should not pretend to. USD-M futures only — spot order signing is " +
       "not implemented. Symbol format: BTCUSDT (no slash).",
   },
   {
@@ -85,9 +94,10 @@ export const STATIC_VENUES: VenueEntry[] = [
     notes:
       "OKX perpetual swap via REST. The enclave implements it and will sign " +
       "once an OKX key is provisioned — provisioning is a property of YOUR " +
-      "deployment, not of this manifest. In Usenami's hosted deployment none " +
-      "is provisioned (as of release 0.6.0), so it signs nowhere there. " +
-      "Symbol format: BTC-USDT-SWAP.",
+      "deployment, and only the gateway you point at can answer whether a key " +
+      "exists there. Symbol format: BTC-USDT-SWAP. Sizes are in CONTRACTS, not " +
+      "coins: one BTC-USDT-SWAP contract is 0.01 BTC, so a cap copied from a " +
+      "coin-denominated venue is wrong by the contract multiplier.",
   },
   {
     venue: "asterdex",
@@ -133,15 +143,16 @@ export const STATIC_VENUES: VenueEntry[] = [
     venue: "hyperliquid_main",
     asset_class: "perp",
     auth_scheme: "eip712",
-    status: "denied",
+    status: "live",
     network: "hyperliquid",
     notes:
-      "Hyperliquid L1 perp, EIP-712 action signing. MAINNET IS DENIED INSIDE THE " +
-      "ENCLAVE: sign_hyperliquid_main_order / _cancel are refused before any key " +
-      "material is loaded or decrypted, so no signature is produced and there is " +
-      "nothing to submit. This is a denial, not a missing configuration — supplying " +
-      "credentials will not change it. Hyperliquid TESTNET signs through the same " +
-      "code path. Symbol format: bare coin name, e.g. BTC.",
+      "Hyperliquid L1 perp, EIP-712 action signing. The enclave exposes exactly two " +
+      "mainnet actions for this venue — order and cancel; there is no withdrawal or " +
+      "transfer action for it at all. Mainnet carries an unconditional money floor: " +
+      "the sealed policy must be authority-signed and must carry binding per-asset " +
+      "size caps, keyed by Hyperliquid's integer asset index, and that floor is not " +
+      "relaxable by a build flag. Hyperliquid TESTNET signs through the same code " +
+      "path. Symbol format: bare coin name, e.g. BTC.",
   },
 ];
 

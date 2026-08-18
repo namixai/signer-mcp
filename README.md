@@ -160,7 +160,7 @@ and `notes` before choosing a venue.**
 | `kucoin`            | live   | perp        | hmac_sha256   | `XBTUSDTM`      | KuCoin Futures (HMAC + encrypted passphrase); qty in contracts |
 | `bybit`             | live   | perp        | hmac_sha256   | `BTCUSDT`       | Bybit V5 linear (`category=linear`) |
 | `hyperliquid_testnet` | live | perp        | eip712 (hyperliquid) | `BTC`    | **The Hyperliquid path that actually signs.** Same enclave code as mainnet, testnet phantom-agent source |
-| `hyperliquid_main`  | **denied** | perp    | eip712 (hyperliquid) | `BTC`    | **Denied inside the enclave** — a policy denial, not a missing configuration; supplying credentials will not change it. Account read is the public `clearinghouseState` |
+| `hyperliquid_main`  | live    | perp    | eip712 (hyperliquid) | `BTC`    | Order and cancel only — the enclave has no withdrawal or transfer action for this venue. Mainnet carries an unconditional money floor (authority-signed policy + binding per-asset caps by integer asset index), not relaxable by a build flag. Account read is the public `clearinghouseState` |
 
 The agent config block is identical for every venue — point `SIGNER_GATEWAY_URL` at your Signer and set `SIGNER_API_TOKEN`. Which venues a given token may trade is bound server-side to that token's policy; `list_venues` reports the full set the gateway can sign, not your per-token allow-list.
 
@@ -206,7 +206,7 @@ Read-only. Requires `SIGNER_API_TOKEN`.
 Place a single market or limit order. The enclave signs the payload after checking policy caps.
 
 Args:
-- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first — `hyperliquid_main` is denied in-enclave
+- `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first
 - `symbol` — canonical (`BTC`, `BTCUSDT`, `BTC/USDT`) **or** venue-native (`BTC-USDT-SWAP`, `XBTUSDTM`, …). The client translates to the venue's native format and echoes it back.
 - `side` — `buy` | `sell`
 - `qty` — **always base-asset quantity** (e.g. 0.001 for 0.001 BTC). Not USD-notional, not venue contracts. Contract-denominated venues (okx: 1 contract = 0.01 BTC on `BTC-USDT-SWAP`) are converted automatically; sizes off the venue's contract grid are rejected, never silently rounded.
@@ -239,7 +239,9 @@ The result includes a `translation` echo — check `translation.sent` to see the
 policy sends them — there is no implicit testnet routing.** On Binance the hosted
 deployment signs **mainnet orders with real funds** (since 2026-07-27); OKX signs
 only where an OKX key is provisioned (the hosted deployment has none today);
-Hyperliquid signs on `hyperliquid_testnet` and is denied on `hyperliquid_main`.
+Hyperliquid signs on both `hyperliquid_testnet` and `hyperliquid_main`. Mainnet additionally
+requires an authority-signed policy carrying binding per-asset caps — a blob without them is
+refused at load, unconditionally.
 An earlier revision of this section said "v0 routes Binance/OKX to testnet" —
 that was wrong, see CHANGELOG 0.6.0.
 
