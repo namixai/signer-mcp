@@ -1,8 +1,8 @@
 # @usenami/signer-mcp
 
-> Sign CEX orders from any MCP-aware AI agent — keys never leave an AWS Nitro Enclave.
+> Sign CEX orders from any MCP-aware AI agent — the signing secret never leaves the AWS Nitro Enclave.
 
-`signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a six-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without ever loading a private key into the agent's process — or yours.
+`signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a six-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without the signing secret ever entering the agent's process — or yours.
 
 Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Assume orders are real.** Which venue and network your orders hit is decided by the policy bound to your token, and neither this page nor `list_venues` can tell you which — ask whoever issued the token. There is no implicit testnet safety net, so treat every order as mainnet money until you have confirmed otherwise. Read [`place_order`](#place_order) before sending anything.
 
