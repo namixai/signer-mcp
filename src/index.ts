@@ -3,7 +3,7 @@
  * @usenami/signer-mcp — v0 (MCP entry point)
  *
  * Sign CEX orders from any MCP-aware AI agent (Claude Desktop, Cursor, ElizaOS)
- * with keys that never leave an AWS Nitro Enclave.
+ * The signing secret never leaves the AWS Nitro Enclave.
  *
  * v0 ships five tools backed by the Usenami Signer gateway. Tool logic lives in
  * `lib.ts` so unit tests can exercise it without booting the MCP transport.
