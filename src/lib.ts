@@ -136,9 +136,11 @@ export const STATIC_VENUES: VenueEntry[] = [
     network: "hyperliquid-testnet",
     notes:
       "Hyperliquid testnet perp, EIP-712 action signing. Same enclave code as " +
-      "mainnet, differing only in the phantom-agent source byte. Like mainnet, NOT " +
-      "reachable through this package's order tools — place_order and cancel_order " +
-      "carry structured routes for binance and okx only in v0. Symbol format: bare " +
+      "mainnet, differing only in the phantom-agent source byte — which makes it the " +
+      "right place to rehearse a mainnet order shape for free. Reachable through " +
+      "place_order and cancel_order. LIMIT ONLY: Hyperliquid has no market order " +
+      "type (the venue expresses one as an aggressively-priced immediate limit, i.e. " +
+      "a slippage choice this package will not make for you). Symbol format: bare " +
       "coin name, e.g. BTC.",
   },
   {
@@ -154,10 +156,13 @@ export const STATIC_VENUES: VenueEntry[] = [
       "the sealed policy must be authority-signed and must carry binding per-asset " +
       "size caps, keyed by Hyperliquid's integer asset index, and that floor is not " +
       "relaxable by a build flag. Hyperliquid TESTNET signs through the same code " +
-      "path. NOT reachable through this package's order tools: place_order and " +
-      "cancel_order carry structured routes for binance and okx only in v0, so a " +
-      "Hyperliquid request returns a route error. The signing capability described " +
-      "here is the enclave's, not this MCP's. Symbol format: bare coin name, e.g. BTC.",
+      "path. Reachable through place_order and cancel_order, which build the venue's " +
+      "action object and submit the enclave's signature. LIMIT ONLY: Hyperliquid has " +
+      "no market order type — the venue expresses one as an aggressively-priced " +
+      "immediate limit, and choosing that bound is the caller's, not this package's. " +
+      "Orders are addressed by an integer ASSET INDEX read from the venue's own " +
+      "metadata; an unknown coin is refused rather than guessed. Symbol format: bare " +
+      "coin name, e.g. BTC.",
   },
 ];
 
@@ -543,10 +548,13 @@ export async function handlePlaceOrder(
   // type=market with price set is NOT rejected — some venues silently ignore,
   // others use as limit-on-fail. We pass through so the venue decides.
   const venue = args.venue.toLowerCase();
+  if (hl.EIP712_ORDER_VENUES.has(venue)) {
+    return placeHyperliquidOrder(cfg, args, venue);
+  }
   if (!STRUCTURED_ORDER_VENUES.has(venue)) {
     return toolError(
-      `place_order is only available for ${[...STRUCTURED_ORDER_VENUES].join(", ")} ` +
-        `in this signer (v0). "${args.venue}" has no structured order route yet.`,
+      `place_order is only available for ${[...STRUCTURED_ORDER_VENUES, ...hl.EIP712_ORDER_VENUES].join(", ")} ` +
+        `in this signer. "${args.venue}" has no order route yet.`,
     );
   }
   // Canonical → venue-native translation (symbol AND size). qty is ALWAYS in
@@ -743,10 +751,13 @@ export async function handleCancelOrder(
   // forwarding a symbolless request that the gateway rejects with an opaque
   // `bad_request` (signer #83 follow-up).
   const venue = args.venue.toLowerCase();
+  if (hl.EIP712_ORDER_VENUES.has(venue)) {
+    return cancelHyperliquidOrder(cfg, args, venue);
+  }
   if (!STRUCTURED_ORDER_VENUES.has(venue)) {
     return toolError(
-      `cancel_order is only available for ${[...STRUCTURED_ORDER_VENUES].join(", ")} ` +
-        `in this signer (v0). "${args.venue}" has no structured cancel route yet.`,
+      `cancel_order is only available for ${[...STRUCTURED_ORDER_VENUES, ...hl.EIP712_ORDER_VENUES].join(", ")} ` +
+        `in this signer. "${args.venue}" has no cancel route yet.`,
     );
   }
   if (!args.symbol) {
@@ -783,8 +794,144 @@ export async function handleCancelOrder(
   }
 }
 
+// ── Hyperliquid (EIP-712) order route ───────────────────────────────────────
+//
+// Same two tools, different mechanics. See `hyperliquid.ts` for why this cannot
+// be a line in `STRUCTURED_ORDER_VENUES`; the short version is that the
+// signature commits to an ACTION OBJECT addressed by an integer asset index,
+// not to an HTTP request.
+
+/** The one nonce source. Hyperliquid wants ms and rejects stale nonces. */
+function hlNonce(): number {
+  return Date.now();
+}
+
+async function placeHyperliquidOrder(
+  cfg: GatewayConfig,
+  args: PlaceOrderInput,
+  venue: string,
+): Promise<ToolResult> {
+  // 🔴 Hyperliquid has no market order. Its own API expresses "market" as an
+  // aggressively-priced IOC limit — which means picking a slippage bound.
+  // This package will not pick one on someone else's money and will not hide
+  // that it picked one. The caller supplies the price.
+  if (args.type === "market") {
+    return toolError(
+      `Hyperliquid has no market order type — the venue itself expresses one as an ` +
+        `aggressively-priced immediate limit, which means choosing how much slippage ` +
+        `to accept. This tool will not choose that for you.`,
+      `Send type="limit" with a price that crosses the book (above the ask to buy, ` +
+        `below the bid to sell). It fills immediately and you keep the bound.`,
+    );
+  }
+  if (args.price === undefined) {
+    return toolError("price is required when type=limit");
+  }
+  try {
+    // Canonical base ("BTC") is already Hyperliquid's native symbol, but route
+    // it through the same translator so an agent can pass "BTC-USDT" or "BTCUSDT"
+    // and get the same order the other venues would give it.
+    const coin = toNativeSymbol(venue, args.symbol);
+    const asset = await hl.resolveAsset(venue, coin, cfg.fetchImpl, cfg.fetchTimeoutMs);
+    const size = hl.formatSize(args.qty, asset.szDecimals);
+    const price = hl.formatPrice(args.price, asset.szDecimals);
+    const action = hl.buildOrderAction({
+      asset,
+      isBuy: args.side === "buy",
+      price,
+      size,
+      reduceOnly: false,
+    });
+    const nonce = hlNonce();
+    // Gateway contract for EIP-712 venues (proto.rs SignHttpRequest): the
+    // generic /sign route, `kind` picks order vs cancel, `action` is forwarded
+    // VERBATIM — the enclave signs the object, so what is built above is what
+    // is signed.
+    const signed = await callGateway<{ signature?: hl.HlSignature; receipt?: unknown }>(
+      "/sign",
+      {
+        method: "POST",
+        body: { exchange: venue, kind: "order", action, nonce },
+        authRequired: true,
+      },
+      cfg,
+    );
+    if (!signed?.signature) {
+      throw new Error("gateway returned no signature for the Hyperliquid action");
+    }
+    const response = await hl.submitAction(
+      venue,
+      action,
+      nonce,
+      signed.signature,
+      cfg.fetchImpl,
+      cfg.fetchTimeoutMs,
+    );
+    return toolJson({
+      venue,
+      // The asset index is echoed on purpose: it is what the signature
+      // committed to, and it is the field a reader cannot verify by eye.
+      translation: { coin: asset.name, asset_index: asset.index, size, price },
+      receipt: signed.receipt,
+      response,
+    });
+  } catch (err) {
+    if (err instanceof NormalizationError) return toolError(err.message);
+    return toolError((err as Error).message);
+  }
+}
+
+async function cancelHyperliquidOrder(
+  cfg: GatewayConfig,
+  args: CancelOrderInput,
+  venue: string,
+): Promise<ToolResult> {
+  if (!args.symbol) {
+    return toolError(
+      `cancel_order on "${venue}" requires "symbol" — a Hyperliquid cancel is addressed ` +
+        `by asset index, which is derived from the coin.`,
+    );
+  }
+  try {
+    const coin = toNativeSymbol(venue, args.symbol);
+    const asset = await hl.resolveAsset(venue, coin, cfg.fetchImpl, cfg.fetchTimeoutMs);
+    const action = hl.buildCancelAction(asset, hl.parseOid(args.order_id));
+    const nonce = hlNonce();
+    const signed = await callGateway<{ signature?: hl.HlSignature; receipt?: unknown }>(
+      "/sign",
+      {
+        method: "POST",
+        body: { exchange: venue, kind: "cancel", action, nonce },
+        authRequired: true,
+      },
+      cfg,
+    );
+    if (!signed?.signature) {
+      throw new Error("gateway returned no signature for the Hyperliquid action");
+    }
+    const response = await hl.submitAction(
+      venue,
+      action,
+      nonce,
+      signed.signature,
+      cfg.fetchImpl,
+      cfg.fetchTimeoutMs,
+    );
+    return toolJson({
+      venue,
+      translation: { coin: asset.name, asset_index: asset.index },
+      receipt: signed.receipt,
+      response,
+    });
+  } catch (err) {
+    if (err instanceof NormalizationError) return toolError(err.message);
+    return toolError((err as Error).message);
+  }
+}
+
 // Re-export parser type so callers can pass getAccountParser without importing
 // the parsers module directly (keeps lib.ts the single public surface).
+import * as hl from "./hyperliquid.js";
 import type { AccountParser } from "./parsers/types.js";
 export type { AccountParser };
 
