@@ -47,6 +47,11 @@ const NATIVE_SYMBOL_BUILDERS: Record<string, (base: string) => string> = {
   bybit: (b) => `${b}USDT`,
   kucoin: (b) => `${b === "BTC" ? "XBT" : b}USDTM`,
   hyperliquid_main: (b) => b,
+  // 🔴 Added 2026-09-02 with the order route. Without it EVERY symbol on
+  // testnet threw "no symbol mapping for venue" — the free rehearsal lane the
+  // route advertises did not work at all. Same identity as mainnet: Hyperliquid
+  // names a perp by its bare coin.
+  hyperliquid_testnet: (b) => b,
   asterdex: (b) => `${b}-USD`,
 };
 

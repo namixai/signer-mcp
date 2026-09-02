@@ -33,8 +33,15 @@ const UNIVERSE = {
   ],
 };
 
-/** Records every call so a test can assert on what was actually sent where. */
-function stubFetch(overrides: Record<string, unknown> = {}) {
+/**
+ * Records every call, and lets a test choose what the VENUE answers.
+ *
+ * 🔴 The `exchange` override exists because the earlier stub always answered
+ * `{status:"ok"}` — which made every transport test green no matter what the
+ * transport did. A stub that cannot produce a refusal cannot catch one being
+ * mistaken for a success, and that is exactly the bug it was covering.
+ */
+function stubFetch(overrides: { sign?: unknown; exchange?: unknown } = {}) {
   const calls: { url: string; body: unknown }[] = [];
   const impl = vi.fn(async (url: string | URL, init?: RequestInit) => {
     const u = String(url);
@@ -44,7 +51,12 @@ function stubFetch(overrides: Record<string, unknown> = {}) {
     if (u.endsWith("/info")) payload = UNIVERSE;
     else if (u.endsWith("/sign")) {
       payload = overrides.sign ?? { signature: { r: "0x1", s: "0x2", v: 28 }, receipt: { seq: "7" } };
-    } else if (u.endsWith("/exchange")) payload = { status: "ok" };
+    } else if (u.endsWith("/exchange")) {
+      // Real success shape, not a placeholder: an accepted order rests with an oid.
+      payload =
+        overrides.exchange ??
+        { status: "ok", response: { type: "order", data: { statuses: [{ resting: { oid: 77 } }] } } };
+    }
     return new Response(JSON.stringify(payload), {
       status: 200,
       headers: { "content-type": "application/json" },
@@ -119,6 +131,14 @@ describe("order id", () => {
     expect(() => parseOid("1.5")).toThrow(/positive integer/);
     expect(parseOid("42")).toBe(42);
   });
+
+  it("🔴 refuses an oid that would silently become a DIFFERENT order", () => {
+    // Number("9007199254740993") === 9007199254740992, and Number.isInteger is
+    // true of the result — the guard has to run before the damage, not after.
+    expect(() => parseOid("9007199254740993")).toThrow(/different order/);
+    // the largest value that survives is still accepted
+    expect(parseOid("9007199254740991")).toBe(9007199254740991);
+  });
 });
 
 describe("place_order on Hyperliquid", () => {
@@ -189,6 +209,93 @@ describe("place_order on Hyperliquid", () => {
       price: 65000,
     });
     expect(payload(res as any).receipt).toEqual({ seq: "7" });
+  });
+});
+
+describe("🔴 the venue refuses inside HTTP 200", () => {
+  // Verified against the live endpoint 2026-09-02: an unsigned cancel returns
+  // HTTP 200 with {"status":"err", …}. Reading res.ok as acceptance would tell
+  // the caller its order is live when the exchange refused it.
+  it("treats a top-level err as a refusal, not a success", async () => {
+    const { impl } = stubFetch({
+      exchange: { status: "err", response: "User or API Wallet 0x… does not exist." },
+    });
+    const res = await handlePlaceOrder(cfg(impl), {
+      venue: "hyperliquid_main",
+      symbol: "BTC",
+      side: "buy",
+      qty: 0.01,
+      type: "limit",
+      price: 65000,
+    });
+    expect(res.isError).toBe(true);
+    expect(payload(res as any).error).toMatch(/refused the action/);
+  });
+
+  it("catches a per-order error even when the action itself was accepted", async () => {
+    const { impl } = stubFetch({
+      exchange: {
+        status: "ok",
+        response: { type: "order", data: { statuses: [{ error: "Order price cannot be more than 80% away from the reference price" }] } },
+      },
+    });
+    const res = await handlePlaceOrder(cfg(impl), {
+      venue: "hyperliquid_main",
+      symbol: "BTC",
+      side: "buy",
+      qty: 0.01,
+      type: "limit",
+      price: 65000,
+    });
+    expect(res.isError).toBe(true);
+    expect(payload(res as any).error).toMatch(/80% away/);
+  });
+
+  it("accepts a genuine success and carries the venue receipt through", async () => {
+    const { impl } = stubFetch();
+    const res = await handlePlaceOrder(cfg(impl), {
+      venue: "hyperliquid_main",
+      symbol: "BTC",
+      side: "buy",
+      qty: 0.01,
+      type: "limit",
+      price: 65000,
+    });
+    expect(res.isError).toBeFalsy();
+    expect(payload(res as any).response.response.data.statuses[0].resting.oid).toBe(77);
+  });
+
+  it("refuses a body it cannot recognise rather than calling it success", async () => {
+    const { impl } = stubFetch({ exchange: { totally: "unexpected" } });
+    const res = await handlePlaceOrder(cfg(impl), {
+      venue: "hyperliquid_main",
+      symbol: "BTC",
+      side: "sell",
+      qty: 0.01,
+      type: "limit",
+      price: 65000,
+    });
+    expect(res.isError).toBe(true);
+  });
+});
+
+describe("testnet is actually usable", () => {
+  // It was not: every symbol threw "no symbol mapping for venue" because the
+  // translator table had no testnet row, while the route advertised testnet as
+  // the free place to rehearse a mainnet order.
+  it("translates symbols and reaches the testnet host", async () => {
+    const { impl, calls } = stubFetch();
+    const res = await handlePlaceOrder(cfg(impl), {
+      venue: "hyperliquid_testnet",
+      symbol: "BTCUSDT",
+      side: "buy",
+      qty: 0.01,
+      type: "limit",
+      price: 65000,
+    });
+    expect(res.isError).toBeFalsy();
+    expect(calls.some((c) => c.url === "https://api.hyperliquid-testnet.xyz/exchange")).toBe(true);
+    expect(calls.every((c) => !c.url.startsWith("https://api.hyperliquid.xyz"))).toBe(true);
   });
 });
 

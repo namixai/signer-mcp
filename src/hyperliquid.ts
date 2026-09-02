@@ -218,10 +218,21 @@ export function buildCancelAction(asset: HlAsset, oid: number): Record<string, u
 
 /** Hyperliquid order ids are integers; a non-integer would be silently mangled. */
 export function parseOid(orderId: string): number {
-  const n = Number(orderId);
-  if (!Number.isInteger(n) || n <= 0) {
+  const raw = orderId.trim();
+  const n = Number(raw);
+  // 🔴 `Number.isInteger` is TRUE after precision is already lost:
+  // Number("9007199254740993") === 9007199254740992, and that integer is a
+  // perfectly good integer — of a DIFFERENT order. The guard has to run before
+  // the damage, which means checking the safe range and reading the number back
+  // as a string. A cancel that addresses the wrong oid is not a validation
+  // error; it leaves the intended order live and kills someone else's.
+  if (!Number.isSafeInteger(n) || n <= 0 || String(n) !== raw) {
     throw new NormalizationError(
-      `Hyperliquid order_id must be a positive integer (its "oid"), got "${orderId}"`,
+      `Hyperliquid order_id must be a positive integer that survives JSON number ` +
+        `precision (its "oid"), got "${orderId}"` +
+        (String(n) !== raw && Number.isFinite(n)
+          ? ` — this value would be sent as ${String(n)}, a different order`
+          : ""),
     );
   }
   return n;
@@ -231,6 +242,43 @@ export interface HlSignature {
   r: string;
   s: string;
   v: number;
+}
+
+/**
+ * 🔴 Hyperliquid reports refusals INSIDE HTTP 200. Verified against the live
+ * endpoint 2026-09-02: an unsigned cancel comes back `200` with
+ * `{"status":"err","response":"User or API Wallet … does not exist."}`.
+ *
+ * So `res.ok` says nothing about whether the order was accepted, and reading it
+ * as acceptance turns "the exchange refused you" into "your order is live" —
+ * the worst direction for this mistake to point. A caller acting on that would
+ * believe it holds a position it does not have.
+ *
+ * Two shapes have to be caught, because the venue uses both:
+ *   · whole action refused → `status: "err"`;
+ *   · action accepted, ORDER refused → `status: "ok"` with an `error` inside
+ *     `response.data.statuses[]` (siblings there are `resting` / `filled`).
+ *
+ * Fail-closed on anything unrecognised: a success shape we do not know is not a
+ * success we can report.
+ */
+export function assertVenueAccepted(parsed: unknown): void {
+  if (parsed === null || typeof parsed !== "object") {
+    throw new Error(`Hyperliquid returned an unreadable body: ${JSON.stringify(parsed)?.slice(0, 500)}`);
+  }
+  const body = parsed as Record<string, unknown>;
+  if (body.status !== "ok") {
+    throw new Error(`Hyperliquid refused the action: ${JSON.stringify(body).slice(0, 800)}`);
+  }
+  const statuses = (body.response as Record<string, any> | undefined)?.data?.statuses;
+  if (Array.isArray(statuses)) {
+    const errors = statuses
+      .filter((s) => s && typeof s === "object" && typeof (s as Record<string, unknown>).error === "string")
+      .map((s) => (s as Record<string, string>).error);
+    if (errors.length > 0) {
+      throw new Error(`Hyperliquid refused the order: ${errors.join("; ")}`);
+    }
+  }
 }
 
 /**
@@ -264,6 +312,7 @@ export async function submitAction(
     if (!res.ok) {
       throw new Error(`Hyperliquid /exchange returned HTTP ${res.status}: ${JSON.stringify(parsed)}`);
     }
+    assertVenueAccepted(parsed);
     return parsed;
   } finally {
     clearTimeout(timer);
