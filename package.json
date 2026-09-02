@@ -1,6 +1,6 @@
 {
   "name": "@usenami/signer-mcp",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Sign CEX orders from any MCP-aware AI agent (Claude Desktop, Cursor, ElizaOS). The signing secret never leaves the AWS Nitro Enclave.",
   "type": "module",
   "main": "dist/index.js",
