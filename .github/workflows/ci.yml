@@ -1,0 +1,64 @@
+name: ci
+
+# 🔴 Until 2026-09-04 this repository had NO workflow at all. `npm test` ran on
+# laptops; the one check that boots the server end to end
+# (scripts/smoke-test.ts) ran nowhere — the terminal repo's release workflow
+# runs it, but against a 0.2.0 copy of this package that stopped tracking this
+# repository in June. The script had been red since place_hedge landed and
+# nobody could see it. A check nobody runs cannot go red.
+#
+# The class this gate is for: "CI green, first start happens in production".
+# Unit tests import lib.ts; nothing in tests/ constructs the McpServer. The
+# smoke step spawns the BUILT server over stdio, does the initialize handshake,
+# lists tools and venues, and drives one gateway-backed tool against an
+# unreachable host — the error path is the test, no gateway is needed.
+#
+# Branch protection is a repository setting and is not set here. Without
+# `required_status_checks` this job is advisory: it can be red and merged.
+# Measured 2026-09-03 (operations): no protection on this repository.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-test-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          # npm ci runs lifecycle scripts; nothing after checkout needs an
+          # authenticated git, so the token is not left in .git/config for
+          # an install script to read (zizmor artipacked, CodeRabbit #17).
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Unit tests
+        run: npm test
+      - name: First start — boot the built server over stdio
+        # The gateway host does not resolve on purpose: tools/list and
+        # list_venues need no gateway, and get_attestation must fail with the
+        # gateway-unreachable hint rather than hang or crash the server.
+        env:
+          SIGNER_GATEWAY_URL: https://nonexistent.example.invalid
+          SIGNER_API_TOKEN: sk_smoke_not_a_real_token
+          SIGNER_FETCH_TIMEOUT_MS: "2000"
+        run: npx tsx scripts/smoke-test.ts
+      - name: Pack (what npm would publish)
+        run: npm pack --dry-run
