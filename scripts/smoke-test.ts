@@ -11,11 +11,18 @@
  * What it does (in order):
  *   1. Spawn `node dist/index.js` with the env above.
  *   2. Send `initialize` → expect protocol-version handshake.
- *   3. Send `tools/list` → expect 5 tools.
- *   4. Call `list_venues` → expect 6 venues
- *      (binance/okx/asterdex/kucoin/bybit/hyperliquid_main).
+ *   3. Send `tools/list` → expect exactly the tools REGISTERED IN src/index.ts.
+ *   4. Call `list_venues` → expect exactly STATIC_VENUES from the built lib.
  *   5. Call `get_attestation` → expect either success (gateway up) or a
  *      gateway-unreachable error with the right hint message.
+ *
+ * 🔴 Expectations are READ FROM THE SOURCE, not listed here. The previous
+ * version listed "5 tools" and "6 venues" by hand; place_hedge (0.5.0) and
+ * hyperliquid_testnet arrived, nothing ran this script (no CI in this repo;
+ * the terminal release workflow builds a 0.2.0 copy), and it sat red and
+ * unnoticed until 2026-09-04 while the server itself booted fine. A listed
+ * table is a table someone forgets to update; a check nobody runs cannot go
+ * red. This script is now the CI gate (.github/workflows/ci.yml).
  *
  * Exits 0 on full pass, 1 on any check fail. Use as a CI gate or a
  * 30-second post-deploy verify before recording the demo.
@@ -27,11 +34,48 @@
  */
 
 import { spawn, ChildProcess } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_PATH = path.resolve(__dirname, "..", "dist", "index.js");
+const SOURCE_PATH = path.resolve(__dirname, "..", "src", "index.ts");
+const LIB_PATH = path.resolve(__dirname, "..", "dist", "lib.js");
+
+/**
+ * Tool names as registered in src/index.ts — read from the source text, the
+ * way signer#79 reads route paths: a registration added tomorrow is covered
+ * without anyone editing this file. The floor guards the extractor itself:
+ * reading nothing must fail, not pass on an empty set.
+ */
+function registeredToolNames(): string[] {
+  // Comments stripped first: a registration mentioned in prose (or commented
+  // out) is not a registration — the marker-matches-prose trap of signer#79.
+  const src = readFileSync(SOURCE_PATH, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const names = [...src.matchAll(/registerTool\(\s*"([a-z_]+)"/g)].map((m) => m[1]);
+  if (names.length < 5) {
+    throw new Error(
+      `read ${names.length} registerTool() calls from ${SOURCE_PATH} — ` +
+        "the extractor is reading nothing and would pass on anything",
+    );
+  }
+  return names.sort();
+}
+
+/** Venue ids the server ships, from the built lib — the same table the tool serves. */
+async function shippedVenueIds(): Promise<string[]> {
+  const lib = (await import(pathToFileURL(LIB_PATH).href)) as {
+    STATIC_VENUES: Array<{ venue: string }>;
+  };
+  const ids = lib.STATIC_VENUES.map((v) => v.venue).sort();
+  if (ids.length < 5) {
+    throw new Error(`STATIC_VENUES has ${ids.length} entries — not the venue table`);
+  }
+  return ids;
+}
 const STARTUP_GRACE_MS = 500;
 // 8s: long enough for a real attestation round-trip on slow networks,
 // short enough that an unreachable host fails fast in CI. The MCP server
@@ -159,18 +203,11 @@ async function main(): Promise<void> {
       tools: Array<{ name: string }>;
     };
     const toolNames = tools.tools.map((t) => t.name).sort();
+    const registered = registeredToolNames();
     check(
-      "tools/list returns 5 tools",
-      toolNames.length === 5,
-      `got: ${toolNames.join(", ")}`,
-    );
-    check(
-      "expected tool set",
-      JSON.stringify(toolNames) ===
-        JSON.stringify(
-          ["cancel_order", "get_account", "get_attestation", "list_venues", "place_order"].sort(),
-        ),
-      `got: ${toolNames.join(", ")}`,
+      `tools/list returns exactly the ${registered.length} tools registered in src/index.ts`,
+      JSON.stringify(toolNames) === JSON.stringify(registered),
+      `got: ${toolNames.join(", ")}\n  registered: ${registered.join(", ")}`,
     );
 
     // 3) list_venues
@@ -183,19 +220,17 @@ async function main(): Promise<void> {
       count: number;
       venues: Array<{ venue: string }>;
     };
+    const shipped = await shippedVenueIds();
     check(
-      "list_venues returns 6 venues",
-      venuesBody.count === 6,
+      `list_venues count matches STATIC_VENUES (${shipped.length})`,
+      venuesBody.count === shipped.length,
       `got ${venuesBody.count}`,
     );
     const venueIds = venuesBody.venues.map((v) => v.venue).sort();
     check(
-      "venues are binance/okx/asterdex/kucoin/bybit/hyperliquid_main",
-      JSON.stringify(venueIds) ===
-        JSON.stringify(
-          ["asterdex", "binance", "bybit", "hyperliquid_main", "kucoin", "okx"],
-        ),
-      `got: ${venueIds.join(",")}`,
+      "list_venues serves exactly the shipped venue table",
+      JSON.stringify(venueIds) === JSON.stringify(shipped),
+      `got: ${venueIds.join(",")}\n  shipped: ${shipped.join(",")}`,
     );
 
     // 4) get_attestation
