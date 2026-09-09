@@ -15,7 +15,7 @@
     "server.json"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/graph && cp src/graph/*.js dist/graph/",
     "prepare": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
@@ -56,6 +56,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.21.0",
+    "@x402/evm": "^2.24.0",
+    "@x402/fetch": "^2.24.0",
+    "viem": "^2.56.3",
     "zod": "^3.23.0"
   },
   "devDependencies": {

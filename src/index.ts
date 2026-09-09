@@ -44,6 +44,7 @@ import {
   handlePlaceOrder,
 } from "./lib.js";
 import { getAccountParser } from "./parsers/index.js";
+import { handleGetVerifiedPrice, type VerifiedPriceInput } from "./graph-price.js";
 
 // ── Environment ──
 // Default: the hosted attested demo enclave. NOT signer.usenami.io — that host
@@ -85,6 +86,19 @@ const WRITE_DESTRUCTIVE_ANNOTATIONS = {
 };
 
 // ── Tool descriptions (read by agents) ──
+const DESC_GET_VERIFIED_PRICE =
+  "Read a Uniswap V3 token price from The Graph and return it ONLY if four checks " +
+  "pass: the indexer signed the exact bytes that arrived, that signer resolves " +
+  "on chain to an indexer with stake, the reading is a usable price (a verified " +
+  "signature over a GraphQL error or a zero is not a price), and the price's own " +
+  "age is measured apart from the subgraph head's age — a head can be fresh while " +
+  "the price it carries is a year old. On refusal no price is returned and the " +
+  "answer names both the check that stopped it (`stage`) and that check's own " +
+  "reason (`cause`): `price_absent_or_zero`, `graphql_errors` and `price_stale` " +
+  "are three different problems with three different fixes. Costs one cent in " +
+  "USDC on Base per query and needs X402_PRIVATE_KEY set; without that key it " +
+  "refuses `no_payer_key` and spends nothing. Runs OUTSIDE the enclave.";
+
 const DESC_LIST_VENUES =
   "List the venues this Signer can sign trades for. Returns the venue id, " +
   "asset class (perp / spot / margin), and auth scheme (hmac / eip712 / " +
@@ -196,6 +210,23 @@ const server = new McpServer({
   name: "@usenami/signer-mcp",
   version: PACKAGE_VERSION,
 });
+
+server.registerTool(
+  "get_verified_price",
+  {
+    description: DESC_GET_VERIFIED_PRICE,
+    inputSchema: {
+      symbol: z.string().describe("Token symbol as the subgraph spells it, e.g. \"WETH\"."),
+      subgraph_id: z.string().optional().describe("Subgraph deployment id. Defaults to Uniswap V3 on Ethereum."),
+      band_bps: z.number().optional().describe("Half-width of the acceptable price band, in basis points."),
+    },
+    annotations: {
+      ...READ_ONLY_ANNOTATIONS,
+      title: "Get a checked market price",
+    },
+  },
+  async (args) => handleGetVerifiedPrice(args as VerifiedPriceInput),
+);
 
 server.registerTool(
   "list_venues",
