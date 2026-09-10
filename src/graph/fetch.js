@@ -23,6 +23,10 @@ export const TESTNET_GATEWAY = 'https://testnet.gateway.thegraph.com/api/x402/su
 // Base mainnet, as the live gateway challenge states.
 export const PAYMENT_NETWORK = 'eip155:8453';
 
+// Двукратный запас к нынешней цене в цент: хватает на подорожание, но не на порядок.
+// Переопределяется только через окружение — см. paidQuery.
+export const MAX_PER_PAYMENT_DEFAULT = '$0.02';
+
 export const UNISWAP_V3_ETHEREUM = '4cKy6QQMc5tpfdx8yxfYeb9TLZmgLQe44ddW1G7NwkA6';
 
 /** Price and freshness. Both fields are load-bearing; see usability.js. */
@@ -86,6 +90,44 @@ export function priceQueryBySymbol(symbol, limit = SYMBOL_MATCH_LIMIT) {
   }
   _meta { block { number timestamp } hasIndexingErrors }
 }`;
+}
+
+/**
+ * Read a symbol query's answer, and say whether it was cut off.
+ *
+ * 🔴 THE PROMISE HAS TO LIVE SOMEWHERE. `priceQueryBySymbol` above explains that
+ * saturation is reported rather than inferred, and until this existed nothing in this
+ * package reported it — the flag was computed by a consumer, so a caller reading these
+ * files was promised a contract the files did not keep. Review on #22 caught exactly that.
+ *
+ * `saturated` is true when the answer holds precisely `limit` rows. That does NOT mean
+ * "these are all of them" and it does not mean "there are more": it means the ceiling was
+ * reached and whether anything lies beyond it cannot be seen from here. Saying that is
+ * the whole point — a truncated list of namesakes could otherwise support "the token you
+ * meant is not here" when the truth was "it did not fit".
+ */
+export function shapeSymbolMatches(rawBody, limit = SYMBOL_MATCH_LIMIT) {
+  // 🔴 ТОТ ЖЕ ДИАПАЗОН, ЧТО И У ЗАПРОСА. Без этого `shapeSymbolMatches(rows(0), 0)`
+  // возвращал ok и `saturated: true` — то есть ПУСТОЙ ответ объявлялся достигнутым
+  // потолком. Хуже обычной ошибки: вызывающий читает «есть ещё, просто не поместились»
+  // там, где совпадений нет вовсе, и идёт сужать запрос вместо того, чтобы менять токен.
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    return { ok: false, reason: 'bad_limit', detail: `limit must be an integer in 1..1000, got ${limit}` };
+  }
+  let parsed;
+  try {
+    parsed = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
+  } catch (err) {
+    return { ok: false, reason: 'body_not_json', detail: String(err?.message ?? err) };
+  }
+  if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
+    return { ok: false, reason: 'graphql_errors', detail: parsed.errors };
+  }
+  const tokens = parsed?.data?.tokens;
+  if (!Array.isArray(tokens)) {
+    return { ok: false, reason: 'no_tokens_field', detail: typeof tokens };
+  }
+  return { ok: true, tokens, saturated: tokens.length === limit, limit };
 }
 
 /**
@@ -199,6 +241,7 @@ export async function paidQuery({
   gateway = GATEWAY,
   privateKey = process.env.X402_PRIVATE_KEY,
   fetchImpl = fetch,
+  timeoutMs = 60_000,
 } = {}) {
   if (!privateKey) {
     // Refusing beats an unpaid request that 402s and looks like a gateway fault.
@@ -218,8 +261,27 @@ export async function paidQuery({
   // retried — a paid path that could not pay. Caught by static analysis of the
   // package's own type declarations; untestable here by running it, because spending
   // is gated. When a path cannot be exercised, the types are the only check.
-  const client = new x402Client().register(PAYMENT_NETWORK, new ExactEvmScheme(account));
-  const paidFetch = wrapFetchWithPayment(fetchImpl, client);
+  // 🔴 ПОТОЛОК НА ПЛАТЁЖ, И ОН НЕ У АГЕНТА. Ревью на signer-mcp#19 право в сути и
+  // неточно в деталях: потолок тут есть и до этой правки — библиотека режет на `$1` за
+  // платёж по умолчанию. Только наш запрос стоит цент, то есть защита была в СТО РАЗ
+  // слабее нужной: вызов, подорожавший до девяноста девяти центов, подписался бы молча.
+  //
+  // Значение приходит из окружения, как и ключ: его задаёт тот, чьи деньги, а не тот,
+  // кто вызывает инструмент. Аргумента для него нет намеренно — иначе агент, которому
+  // дали этот модуль, поднял бы себе потолок сам.
+  const client = x402Client.fromConfig({
+    schemes: [{ network: PAYMENT_NETWORK, client: new ExactEvmScheme(account) }],
+    spendControls: { maxAmountPerPayment: process.env.X402_MAX_PER_PAYMENT ?? MAX_PER_PAYMENT_DEFAULT },
+  });
+  // 🔴 СРОК НАВЕШИВАЕТСЯ НА ВНУТРЕННИЙ ВЫЗОВ, а не передаётся обёртке. Замер 10.09:
+  // `wrapFetchWithPayment` ТЕРЯЕТ `signal` из init — до нижнего fetch он не доходит
+  // вовсе. Ревью предполагало обратное, и передача сигнала обёртке добавила бы срок,
+  // который никуда не ведёт: молчащий шлюз всё равно оставлял бы вызов висеть вечно.
+  // Поэтому оборачиваем сам fetchImpl и ставим сигнал на каждый его вызов, включая
+  // повтор с оплатой.
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const timedFetch = (url, init) => fetchImpl(url, { ...init, signal: deadline });
+  const paidFetch = wrapFetchWithPayment(timedFetch, client);
 
   let res;
   let rawBody;

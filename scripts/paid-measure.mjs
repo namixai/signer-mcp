@@ -17,6 +17,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import { quote } from '../dist/graph/fetch.js';
 import { openSync, readSync, closeSync } from 'node:fs';
+import { interpretConfirmation } from '../dist/confirm.js';
 
 const key = process.env.X402_PRIVATE_KEY;
 if (!key) {
@@ -62,9 +63,18 @@ if (balance < BigInt(q.amountAtomic)) {
 
 process.stderr.write('Списать эту сумму? Enter — да, Ctrl-C — нет: ');
 const tty = openSync('/dev/tty', 'r');
-const buf = Buffer.alloc(8);
-readSync(tty, buf, 0, 8, null);
+const buf = Buffer.alloc(64);
+const n = readSync(tty, buf, 0, 64, null);
 closeSync(tty);
+const verdict = interpretConfirmation(n, buf);
+if (!verdict.ok) {
+  const msg = verdict.reason === 'eof'
+    ? 'Ввод закрыт (EOF), подтверждения не было. Ничего не списано.'
+    : `Понято как отказ: ${JSON.stringify(verdict.answer)}. Ничего не списано.`;
+  console.error('');
+  console.error(msg);
+  process.exit(2);
+}
 
 const t0 = Date.now();
 // Без символа: запрос возвращает пятёрку с самой свежей ценой, и какие это токены —

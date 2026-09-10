@@ -10,6 +10,7 @@
 // только «не годится», выберет неправильную.
 
 import { describe, it, expect } from "vitest";
+import { fileURLToPath } from "node:url";
 import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 
 
@@ -21,7 +22,7 @@ import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 // /tmp на моём ноутбуке: локально зелено, в CI — ENOENT. Тест, который проходит только
 // у автора, ничего не проверяет. Это запись настоящего ответа шлюза, и она едет вместе
 // с кодом; сторож дрейфа сверяет её с истоком так же, как перенесённые модули.
-const FIXTURE = new URL("./fixtures/sample1.body.json", import.meta.url).pathname;
+const FIXTURE = fileURLToPath(new URL("./fixtures/sample1.body.json", import.meta.url));
 
 const BODY = (tokens: unknown[]) =>
   JSON.stringify({
@@ -33,7 +34,7 @@ const read = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0
 // Заглушки, при которых проход доходит до конца. Каждый тест ломает РОВНО ОДНУ.
 const passingBase = (): PriceDeps =>
   ({
-    paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([]), attestationHeader: "hdr", subgraphId: "sub" }),
+    paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([{ symbol: "WETH", id: "0xabc", lastPriceUSD: "1", lastPriceBlockNumber: "9" }]), attestationHeader: "hdr", subgraphId: "sub" }),
     parseAttestationHeader: () => ({ parsed: true }),
     verifyAttestation: async () => ({ ok: true, allocationId: "0xalloc", subgraphDeploymentID: "0xdep" }),
     chainHead: async () => 1000n,
@@ -262,6 +263,15 @@ describe("сборка снимка проверяется настоящей, �
       expect(out.snapshot, how).toBeDefined();
       expect(out.priced[0].symbol, how).toBe("WETH");
       expect(Number(out.priced[0].price_usd), how).toBeGreaterThan(0);
+
+      // 🔴 Единственная подписываемая форма. Ответ ронял `dataText`, то есть подписывать
+      // было нечего. Пересобрать его из `snapshot` нельзя: другой сериализатор даст
+      // другой порядок ключей и другие пробелы, подпись ляжет на другие байты и не
+      // сойдётся. Поэтому проверяем не «поле есть», а что оно НЕСЁТ ТОТ ЖЕ снимок и что
+      // его длина совпадает с объявленной.
+      expect(typeof out.dataText, `${how}: dataText потерян — подписывать нечего`).toBe("string");
+      expect(JSON.parse(out.dataText), how).toEqual(out.snapshot);
+      expect(new TextEncoder().encode(out.dataText).length, how).toBe(out.bytes);
     }
   });
 
@@ -327,7 +337,214 @@ describe("срезка выдачи по тикеру видна вызываю�
   });
 
   it("по адресу насыщения быть не может: адрес опознаёт один токен", async () => {
-    const out = read(await handleGetVerifiedPrice({ token_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" }, depsFor(100)));
+    const addr = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+    // Строки несут ТОТ адрес, о котором спрашиваем: иначе тест мерил бы не насыщение, а
+    // сверку адреса, которая теперь стоит отдельно и проверяется своим тестом.
+    const rows = Array.from({ length: 100 }, () => ({ symbol: "WETH", id: addr.toLowerCase() }));
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY(rows), attestationHeader: "h" }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ token_address: addr }, deps));
     expect(out.truncated).toBe(false);
+  });
+});
+
+// Недоступность цепи не повод покупать заново.
+//
+// 🔴 Растяжка на исходник, и я говорю это прямо: логика повтора живёт в скрипте, который
+// исполняется при импорте, поэтому поведенчески её отсюда не завести. Проверка держит то
+// единственное, что имеет цену, — что `chain_unreachable` НЕ в множестве повторяемых.
+// К моменту этого отказа платный ответ уже куплен и подпись проверена; повтор берёт
+// новые данные Graph, которые не нужны, и перебои RPC съедают весь потолок попыток.
+describe("повтор не покупает заново то, что уже куплено", () => {
+  it("chain_unreachable выведен из повторяемых причин", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../scripts/retry-until-clean.mjs", import.meta.url), "utf8");
+    const transient = /const TRANSIENT = new Set\((\[[^\]]*\])\)/.exec(src);
+    expect(transient, "множество повторяемых причин не найдено — скрипт переписали").toBeTruthy();
+    const causes: string[] = JSON.parse(transient![1].replace(/'/g, '"'));
+    expect(causes).not.toContain("chain_unreachable");
+    // И остаётся повторяемым то, что действительно потеряно в доставке.
+    expect(causes).toContain("paid_request_failed");
+  });
+});
+
+// Четыре находки из тела ревью на #19: тул не имеет права падать, и негодный вход не
+// имеет права стоить денег.
+describe("платный путь не роняет инструмент и не берёт денег за заведомо негодное", () => {
+  const withHeader = async (hdr: unknown) => {
+    const A = await import("../src/graph/attestation.js");
+    return {
+      ...passingBase(),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([{ symbol: "WETH" }]), attestationHeader: hdr }),
+      parseAttestationHeader: A.parseAttestationHeader,
+    } as unknown as PriceDeps;
+  };
+
+  it("отсутствующий и кривой заголовок аттестации — отказ по имени, а не исключение", async () => {
+    for (const [hdr, cause] of [
+      [null, "attestation_header_missing"],
+      ["не json", "attestation_header_unreadable"],
+    ] as const) {
+      const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, await withHeader(hdr)));
+      expect(out.ok).toBe(false);
+      expect(out.cause).toBe(cause);
+    }
+  });
+
+  it("дробная полоса отвергается ДО оплаты", async () => {
+    let paid = false;
+    const deps = { ...passingBase(), paidQuery: async () => { paid = true; return { ok: true }; } } as unknown as PriceDeps;
+    for (const bad of [12.5, -1, 10_001, NaN, "5"]) {
+      const out = read(await handleGetVerifiedPrice({ symbol: "WETH", band_bps: bad } as any, deps));
+      expect(out.ok, `принята полоса ${String(bad)}`).toBe(false);
+      expect(out.cause).toBe("bad_request");
+    }
+    expect(paid, "🔴 заплатили за запрос, который всё равно бы упал").toBe(false);
+    // Целые в диапазоне обязаны проходить, иначе проверка просто запрещает полосу.
+    const good = read(await handleGetVerifiedPrice({ symbol: "WETH", band_bps: 250 } as any, passingBase()));
+    expect(good.ok).toBe(true);
+  });
+
+  it("null во времени блока не проходит: Number(null) это 0, а ноль конечен", async () => {
+    const body = JSON.parse(BODY([{ symbol: "WETH" }]));
+    for (const bad of [null, "", false, 0, -5]) {
+      body.data._meta.block.timestamp = bad;
+      const deps = {
+        ...passingBase(),
+        paidQuery: async () => ({ ok: true, status: 200, rawBody: JSON.stringify(body), attestationHeader: "h" }),
+      } as unknown as PriceDeps;
+      const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+      expect(out.ok, `прошло время блока ${JSON.stringify(bad)}`).toBe(false);
+      expect(out.cause).toBe("missing_block_timestamp");
+    }
+  });
+
+  it("не-2xx ответ несёт статус, а не пустую причину", async () => {
+    const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 503 }) } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("query_failed");
+    expect(out.detail).toEqual({ status: 503 });
+  });
+});
+
+// Однофамильцы проверяются поштучно, а не по имени во всём ответе.
+//
+// Ревью на #19: `checkUsable` ищет по тикеру, поэтому при пяти строках с именем WETH пять
+// вызовов разбирали ОДНУ И ТУ ЖЕ первую строку и повторяли её вердикт пятикратно —
+// ровно там, где неуникальность тикера и есть предмет разговора.
+describe("каждая строка токена проверяется своя", () => {
+  it("одинаковые тикеры дают РАЗНЫЕ вердикты по своим строкам", async () => {
+    const rows = [
+      { symbol: "WETH", id: "0xaaa", lastPriceUSD: "0", lastPriceBlockNumber: "9" },
+      { symbol: "WETH", id: "0xbbb", lastPriceUSD: "2400", lastPriceBlockNumber: "1000" },
+    ];
+    const real = await import("../src/graph/usability.js");
+    const deps = {
+      ...passingBase(),
+      checkUsable: real.checkUsable,
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY(rows), attestationHeader: "h" }),
+    } as unknown as PriceDeps;
+
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok, `оба отвергнуты: ${out.cause} ${JSON.stringify(out.detail)}`).toBe(true);
+    // Нулевая строка отвергнута, ненулевая прошла — значит разбирались РАЗНЫЕ строки.
+    expect(out.priced.map((p: any) => p.token_address)).toEqual(["0xbbb"]);
+    expect(out.refused.map((r: any) => r.reason)).toEqual(["price_absent_or_zero"]);
+  });
+});
+
+// Точная причина не заменяется общей.
+//
+// Ревью на #20: при `ok: false` от shapeSymbolMatches код шёл дальше на том же теле, и
+// вызывающий получал `not_usable` вместо `no_tokens_field`, а `detail` терялся. Причина,
+// подменённая менее точной, — та же потеря информации, что и молчание.
+describe("отказ разбора ответа доезжает своим именем", () => {
+  it("нет поля tokens — так и сказано, а не «непригодно»", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: true, status: 200, attestationHeader: "h",
+        rawBody: JSON.stringify({ data: { _meta: { block: { number: "1000", timestamp: "1757400000" } } } }),
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok).toBe(false);
+    expect(out.cause, "точную причину заменили общей").toBe("no_tokens_field");
+  });
+
+  it("GraphQL-ошибки в теле называются ими, а не отсутствием цены", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: true, status: 200, attestationHeader: "h",
+        rawBody: JSON.stringify({ errors: [{ message: "bad field" }] }),
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("graphql_errors");
+    expect(out.detail).not.toBeNull();
+  });
+});
+
+// Спросили адрес — сверяем адрес.
+//
+// Ревью на #20 (Major): по адресу принималась любая пришедшая строка, без сравнения
+// `row.id` с запрошенным. Это та же находка про однофамильцев с другой стороны — там мы
+// не могли отличить нужный токен от тёзки, здесь просто верили, что вернули нужный.
+// Кривой ответ собрал бы снимок ЧУЖОГО токена под нашим вопросом.
+describe("ответ на запрос по адресу сверяется с адресом", () => {
+  const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+  const OTHER = "0x1111111111111111111111111111111111111111";
+  const depsWith = (rows: unknown[]) =>
+    ({
+      ...passingBase(),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY(rows), attestationHeader: "h" }),
+    }) as unknown as PriceDeps;
+
+  it("вернули другой токен — отказ, а не снимок чужого", async () => {
+    const out = read(await handleGetVerifiedPrice({ token_address: WETH }, depsWith([{ symbol: "WETH", id: OTHER }])));
+    expect(out.ok, "собран снимок токена, которого мы не спрашивали").toBe(false);
+    expect(out.cause).toBe("token_not_found");
+  });
+
+  it("нужная строка выбирается среди чужих", async () => {
+    const rows = [
+      { symbol: "WETH", id: OTHER, lastPriceUSD: "999", lastPriceBlockNumber: "1000" },
+      { symbol: "WETH", id: WETH.toLowerCase(), lastPriceUSD: "2400", lastPriceBlockNumber: "1000" },
+    ];
+    const real = await import("../src/graph/usability.js");
+    const out = read(await handleGetVerifiedPrice({ token_address: WETH }, { ...depsWith(rows), checkUsable: real.checkUsable } as any));
+    expect(out.ok, `${out.cause} ${JSON.stringify(out.detail)}`).toBe(true);
+    expect(out.priced).toHaveLength(1);
+    expect(out.priced[0].price_usd).toBe("2400");
+  });
+
+  it("регистр адреса не решает: субграф ключует в нижнем", async () => {
+    const rows = [{ symbol: "WETH", id: WETH.toLowerCase(), lastPriceUSD: "2400", lastPriceBlockNumber: "1000" }];
+    const real = await import("../src/graph/usability.js");
+    for (const asked of [WETH, WETH.toLowerCase(), WETH.toUpperCase().replace("0X", "0x")]) {
+      const out = read(await handleGetVerifiedPrice({ token_address: asked }, { ...depsWith(rows), checkUsable: real.checkUsable } as any));
+      expect(out.ok, `не нашёлся при написании ${asked}`).toBe(true);
+    }
+  });
+});
+
+// Статус не теряется, когда есть деталь.
+describe("отказ несёт и код, и то, что сказал шлюз", () => {
+  it("когда есть оба — в ответе оба", async () => {
+    const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 503, detail: "upstream down" }) } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    // 🔴 `??` отбрасывал статус ровно там, где деталь есть, — то есть в самых
+    // информативных случаях: знаешь, ЧТО сказали, и не знаешь, каким кодом.
+    expect(out.detail).toEqual({ status: 503, detail: "upstream down" });
+  });
+
+  it("когда есть только одно — оно и приходит", async () => {
+    const onlyStatus = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 502 }) } as unknown as PriceDeps;
+    expect(read(await handleGetVerifiedPrice({ symbol: "WETH" }, onlyStatus)).detail).toEqual({ status: 502 });
+    const onlyDetail = { ...passingBase(), paidQuery: async () => ({ ok: false, detail: "boom" }) } as unknown as PriceDeps;
+    expect(read(await handleGetVerifiedPrice({ symbol: "WETH" }, onlyDetail)).detail).toBe("boom");
   });
 });

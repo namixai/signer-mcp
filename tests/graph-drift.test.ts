@@ -6,11 +6,12 @@
 
 import { describe, it, expect } from "vitest";
 import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
-const VENDORED = new URL("../src/graph/", import.meta.url).pathname;
+const VENDORED = fileURLToPath(new URL("../src/graph/", import.meta.url));
 
 // Куда смотреть за истиной — за КОММИТ, а не за рабочую копию.
 //
@@ -19,7 +20,14 @@ const VENDORED = new URL("../src/graph/", import.meta.url).pathname;
 // случайно выкачено» — это сторож, который однажды молча одобрит дрейф. Поэтому истина
 // читается из origin/main через git, а рабочая копия не участвует вовсе.
 const REPO = process.env.GRAPH_SOURCE_REPO ?? join(process.env.HOME ?? "", "ethonline-sub");
-const REF = process.env.GRAPH_SOURCE_REF ?? "origin/main";
+// 🔴 Умолчание — ОБЪЯВЛЕННЫЙ коммит, а не подвижная ветка. PROVENANCE.md называет тот
+// самый коммит, с которого сняты копии; сверяясь с origin/main, сторож молчал бы ровно
+// в тот момент, когда исток ушёл вперёд, — то есть когда копии и стали устаревшими.
+// Ветку можно передать через GRAPH_SOURCE_REF, когда правка ещё не влита.
+const DECLARED = /at commit `([0-9a-f]{7,40})`/.exec(
+  readFileSync(fileURLToPath(new URL("../src/graph/PROVENANCE.md", import.meta.url)), "utf8"),
+)?.[1];
+const REF = process.env.GRAPH_SOURCE_REF ?? DECLARED ?? "origin/main";
 
 function fromGit(file: string, dir = "src"): Buffer | null {
   try {
@@ -51,7 +59,7 @@ describe("перенесённые модули не разошлись с ис�
 
   // Фикстуры — тоже копии, и расходятся так же тихо.
   it.skipIf(!source)("записанные ответы тоже не разошлись с источником", () => {
-    const dir = new URL("./fixtures/", import.meta.url).pathname;
+    const dir = fileURLToPath(new URL("./fixtures/", import.meta.url));
     const fx = readdirSync(dir).filter((f) => f.endsWith(".json"));
     expect(fx.length, "фикстур нет — тест проводки читает неизвестно что").toBeGreaterThan(0);
     for (const f of fx) {

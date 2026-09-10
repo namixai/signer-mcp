@@ -1,7 +1,15 @@
 # These five files are copies, and that is a liability worth naming
 
 Source of truth: `integrations/graph/src/` in **namixai/signer-ethonline2026**,
-at commit `3f16027b5309fae035c501a3900f27f5dbc62277`. They are here byte for byte — not adapted, not "ported".
+at commit `27a4f1f97c00a0e36604069adb273cfb6f1e2666`. They are here byte for byte — not
+adapted, not "ported".
+
+🔴 **This line is the drift guard's default target, so it is not decoration.** The guard
+reads the commit out of this file and compares the copies against it; pointing the check
+at a moving branch instead would leave it silent exactly when the source moves ahead —
+which is the moment the copies become stale. Re-pin it in the same change that re-copies
+them, never separately. While a source change is still on a branch, pass
+`GRAPH_SOURCE_REF` rather than editing this line to a branch name.
 
 ## Why a copy and not a dependency
 

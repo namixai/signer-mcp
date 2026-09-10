@@ -17,12 +17,20 @@ import { createPublicClient, http, erc20Abi, formatUnits } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import { openSync, readSync, closeSync } from 'node:fs';
+import { interpretConfirmation } from '../dist/confirm.js';
 
 const MAX_ATTEMPTS = Number(process.env.MAX_ATTEMPTS ?? 5);
 const TOKEN = process.env.TOKEN ?? '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
 
 // Сбой доставки: ответа не было, повтор осмыслен.
-const TRANSIENT = new Set(['paid_request_failed', 'query_failed', 'chain_unreachable', 'verify_unreachable', 'verify_no_verdict']);
+// 🔴 `chain_unreachable` СЮДА НЕ ВХОДИТ, и это стоило бы денег. К моменту этого отказа
+// платный запрос уже прошёл и подпись уже проверена: ответ Graph лежит на руках, а
+// недоступен узел ЦЕПИ. Повтор покупает новые данные Graph, которые нам не нужны, — и
+// перебои RPC способны съесть все MAX_ATTEMPTS платежей, ни разу не приблизив к ответу.
+// Правильное лечение — повторять только чтение цепи по уже купленному ответу; до тех пор
+// останавливаемся и говорим об этом. Ревью CodeRabbit на signer-mcp#19.
+const TRANSIENT = new Set(['paid_request_failed', 'query_failed', 'verify_unreachable', 'verify_no_verdict']);
+const NOT_WORTH_PAYING_AGAIN = new Set(['chain_unreachable']);
 
 const key = process.env.X402_PRIVATE_KEY;
 if (!key) { console.error('X402_PRIVATE_KEY пуст.'); process.exit(2); }
@@ -45,7 +53,19 @@ console.log(`
 if (Number(formatUnits(before, 6)) < MAX_ATTEMPTS * 0.01) { console.error('Баланса не хватает на потолок. Ничего не списано.'); process.exit(2); }
 
 process.stderr.write('Запустить? Enter — да, Ctrl-C — нет: ');
-const tty = openSync('/dev/tty', 'r'); readSync(tty, Buffer.alloc(8), 0, 8, null); closeSync(tty);
+const tty = openSync('/dev/tty', 'r');
+const buf = Buffer.alloc(64);
+const n = readSync(tty, buf, 0, 64, null);
+closeSync(tty);
+const verdict = interpretConfirmation(n, buf);
+if (!verdict.ok) {
+  const msg = verdict.reason === 'eof'
+    ? 'Ввод закрыт (EOF), подтверждения не было. Ничего не списано.'
+    : `Понято как отказ: ${JSON.stringify(verdict.answer)}. Ничего не списано.`;
+  console.error('');
+  console.error(msg);
+  process.exit(2);
+}
 
 let out = null;
 for (let i = 1; i <= MAX_ATTEMPTS; i++) {
@@ -55,7 +75,12 @@ for (let i = 1; i <= MAX_ATTEMPTS; i++) {
   const took = Date.now() - t0;
   if (out.ok) { console.log(`  попытка ${i}: ✅ получилось за ${took} мс`); break; }
   const again = TRANSIENT.has(out.cause);
-  console.log(`  попытка ${i}: ${out.cause} (${out.stage}) за ${took} мс — ${again ? 'сбой доставки, повторяю' : 'ЭТО ОТВЕТ, а не сбой: повтор купит то же самое, останавливаюсь'}`);
+  const why = again
+    ? 'сбой доставки, повторяю'
+    : NOT_WORTH_PAYING_AGAIN.has(out.cause)
+      ? 'ответ Graph уже куплен и лежит на руках, недоступна ЦЕПЬ — повтор купит ненужные данные, останавливаюсь'
+      : 'ЭТО ОТВЕТ, а не сбой: повтор купит то же самое, останавливаюсь';
+  console.log(`  попытка ${i}: ${out.cause} (${out.stage}) за ${took} мс — ${why}`);
   if (!again) break;
   await new Promise((r) => setTimeout(r, 1500 * i));
 }

@@ -16,7 +16,7 @@
 
 import {
   paidQuery, priceQueryByAddress, priceQueryBySymbol,
-  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM, SYMBOL_MATCH_LIMIT,
+  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM, shapeSymbolMatches,
 } from "./graph/fetch.js";
 import { verifyAttestation, parseAttestationHeader } from "./graph/attestation.js";
 import { chainHead, resolveIndexer, arbitrumClient } from "./graph/chain.js";
@@ -109,6 +109,16 @@ export async function handleGetVerifiedPrice(
   // and the real Wrapped Ether was not among them — measured on a paid query, 2026-09-10.
   // Anyone can deploy a token and name it anything, so a ticker names a token about as
   // precisely as a first name names a person.
+  // 🔴 ПОЛОСА ПРОВЕРЯЕТСЯ ДО ОПЛАТЫ. Дробное значение доезжало до BigInt внутри снимка и
+  // роняло проход RangeError'ом — то есть цент уже потрачен, а ответа нет и отказа по
+  // имени тоже нет. Негодный вход обязан стоить ноль.
+  if (args.band_bps !== undefined) {
+    const b = args.band_bps;
+    if (typeof b !== "number" || !Number.isInteger(b) || b < 0 || b > 10_000) {
+      return refuse("query", "bad_request", `band_bps must be a whole number of basis points in 0..10000, got ${String(b)}`);
+    }
+  }
+
   let query: string;
   try {
     query = address
@@ -127,13 +137,36 @@ export async function handleGetVerifiedPrice(
   let t = ms();
   const q: any = await deps.paidQuery({ query, ...(args.subgraph_id ? { subgraphId: args.subgraph_id } : {}) });
   timings.query_ms = ms() - t;
-  if (!q?.ok) return refuse("query", String(q?.reason ?? "query_failed"), q?.detail);
+  if (!q?.ok) {
+    // Статус несём всегда: «query_failed» без него не отличает 503 шлюза от отказа платежа.
+    // 🔴 Оба, а не одно из двух. `??` отбрасывал статус, как только была деталь, — то
+    // есть ровно в самых информативных случаях, где хочется знать и что сказал шлюз, и
+    // каким кодом он это сказал.
+    const detail =
+      q?.detail !== undefined && q?.status !== undefined
+        ? { status: q.status, detail: q.detail }
+        : (q?.detail ?? (q?.status !== undefined ? { status: q.status } : null));
+    return refuse("query", String(q?.reason ?? "query_failed"), detail, timings);
+  }
 
   // 2. The signature over the bytes AS THEY ARRIVED. Re-serialising the JSON first
   //    changes the hash, so the raw body travels untouched from fetch to here.
   t = ms();
-  const attestation = deps.parseAttestationHeader(q.attestationHeader);
-  const verification: any = await deps.verifyAttestation(q.rawBody, attestation);
+  // 🔴 Разбор заголовка БРОСАЕТ на отсутствующем и на кривом — это его контракт. Инструмент
+  // обязан отказать по имени, а не упасть: к этому месту платёж уже прошёл, и падение
+  // отнимает у вызывающего и деньги, и причину.
+  let verification: any;
+  try {
+    const attestation = deps.parseAttestationHeader(q.attestationHeader);
+    verification = await deps.verifyAttestation(q.rawBody, attestation);
+  } catch (err: any) {
+    return refuse(
+      "attestation",
+      q.attestationHeader ? "attestation_header_unreadable" : "attestation_header_missing",
+      String(err?.message ?? err),
+      timings,
+    );
+  }
   timings.attestation_ms = ms() - t;
   if (!verification?.ok) {
     return refuse("attestation", String(verification?.reason ?? "attestation_failed"), verification?.detail);
@@ -176,19 +209,60 @@ export async function handleGetVerifiedPrice(
   // Раньше срезка была молчаливой, и «настоящего среди них нет» могло на самом деле
   // значить «настоящий не попал в выдачу» — то есть находка про неуникальность тикера
   // выглядела бы сильнее, чем данные её держат.
-  const rows: unknown[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
-  const saturated = symbol !== null && address === null && rows.length === SYMBOL_MATCH_LIMIT;
+  // Считает исток, а не эта копия: два места, вычисляющих одно и то же, расходятся
+  // молча, и уже расходились — флаг жил здесь, пока комментарий в fetch.js обещал его там.
+  const shaped: any = shapeSymbolMatches(parsed as object);
+  // 🔴 Отказ разбора ПРОБРАСЫВАЕТСЯ, а не проглатывается. Раньше при `ok: false` код шёл
+  // дальше на том же разобранном теле: без `data.tokens` список оказывался пустым и
+  // вызывающий получал общее `not_usable` вместо точного `no_tokens_field`, а `detail`
+  // терялся. Причина, которую заменили на менее точную, — та же потеря, что и молчание.
+  if (shaped?.ok !== true) {
+    return refuse("usability", String(shaped?.reason ?? "unshapeable_response"), shaped?.detail, timings);
+  }
+  const saturated = symbol !== null && address === null && shaped.saturated === true;
 
+  const rows: any[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
   const available: string[] = Array.isArray((parsed as any)?.data?.tokens)
     ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)
     : [];
 
   // По адресу вернётся ровно один токен — проверяем его, каким бы ни был его тикер.
-  const wanted = address ? available : symbol ? [symbol] : available;
-  const checked = wanted.map((sym) => ({ symbol: sym, result: deps.checkUsable(parsed, sym, head) as any }));
+  // 🔴 КАЖДАЯ СТРОКА ПРОВЕРЯЕТСЯ ОТДЕЛЬНО. Раньше на каждый токен уходил ОДИН И ТОТ ЖЕ
+  // полный ответ и его тикер, а `checkUsable` ищет по тикеру — так что при пяти строках
+  // с именем WETH пять проверок разбирали одну и ту же первую строку и повторяли её
+  // вердикт пятикратно. Ровно там, где неуникальность тикера и есть предмет разговора.
+  const meta = (parsed as any)?.data?._meta;
+  const isolate = (row: any) => ({ data: { tokens: [row], _meta: meta } });
+  // 🔴 СПРОСИЛИ АДРЕС — СВЕРЯЕМ АДРЕС. Раньше по адресу принималась любая пришедшая
+  // строка, без сравнения `row.id` с запрошенным. Это та же находка про однофамильцев,
+  // только с другой стороны: там мы не могли отличить нужный токен от тёзки, здесь —
+  // просто верили, что вернули запрошенный. Кривой ответ собрал бы снимок ЧУЖОГО токена
+  // под нашим вопросом, и подпись легла бы на него.
+  const norm = (v: unknown) => String(v ?? "").toLowerCase();
+  const wanted: any[] = address
+    ? rows.filter((r: any) => norm(r?.id) === norm(address))
+    : symbol
+      ? rows.filter((r: any) => r?.symbol === symbol)
+      : rows;
+  const checked = wanted.map((row: any) => ({
+    symbol: row?.symbol,
+    id: row?.id,
+    result: deps.checkUsable(isolate(row), row?.symbol, head) as any,
+  }));
   timings.usability_ms = ms() - t;
 
   const good = checked.filter((c) => c.result?.ok === true);
+  if (checked.length === 0) {
+    // Ни одна строка не подошла под запрошенное. Это ОТДЕЛЬНАЯ причина, а не «непригодно»:
+    // «такого токена в ответе нет» и «токен есть, но цены у него нет» чинятся по-разному —
+    // первое сменой запроса, второе ничем.
+    return refuse(
+      "usability",
+      "token_not_found",
+      { asked: symbol ?? address ?? "(все пришедшие)", available, truncated: saturated },
+      timings,
+    );
+  }
   if (good.length === 0) {
     const first = checked[0]?.result;
     return refuse(
@@ -206,7 +280,12 @@ export async function handleGetVerifiedPrice(
   const observedAtMs = ms();
   // Отметка времени блока приходит в самом ответе, в секундах.
   const rawTs = (parsed as any)?.data?._meta?.block?.timestamp;
-  const blockTsMs = Number.isFinite(Number(rawTs)) ? Number(rawTs) * 1000 : NaN;
+  // 🔴 `Number(null)` — это 0, а ноль конечен. Прежняя проверка на конечность пропускала
+  // null, пустую строку и false, снимок собирался со временем блока в начале эпохи, и
+  // проверка порядка времён при этом молчала. Отсутствующее значение проваливалось в
+  // умолчание и голосовало. Требуем положительное число и ничего кроме.
+  const tsNum = typeof rawTs === "string" || typeof rawTs === "number" ? Number(rawTs) : NaN;
+  const blockTsMs = Number.isFinite(tsNum) && tsNum > 0 ? tsNum * 1000 : NaN;
   if (!Number.isFinite(blockTsMs)) {
     return refuse("snapshot", "missing_block_timestamp", { got: rawTs ?? null }, timings);
   }
@@ -242,6 +321,12 @@ export async function handleGetVerifiedPrice(
   return toolJson({
     ok: true,
     snapshot: snap.snapshot,
+    // 🔴 ЕДИНСТВЕННАЯ ПОДПИСЫВАЕМАЯ ФОРМА. `dataText` — это точные байты, которые
+    // buildSnapshot сериализовал и которые предназначены к подписи ключом данных.
+    // Собрать их заново из `snapshot` нельзя: порядок ключей и пробелы у другого
+    // сериализатора будут иными, подпись ляжет на другие байты и не сойдётся. Ответ
+    // ронял это поле, то есть подписывать было нечего. Ревью CodeRabbit на #19.
+    dataText: snap.dataText,
     bytes: snap.bytes,
     checks: {
       attestation_verified_over_raw_bytes: true,
@@ -255,7 +340,7 @@ export async function handleGetVerifiedPrice(
     timings_ms: timings,
     available,
     truncated: saturated,
-    priced: good.map((c) => ({ symbol: c.symbol, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
+    priced: good.map((c) => ({ symbol: c.symbol, token_address: c.id ?? null, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
     refused: checked.filter((c) => c.result?.ok !== true).map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })),
   });
 }

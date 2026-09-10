@@ -17,6 +17,7 @@ import { createPublicClient, http, erc20Abi, formatUnits } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import { openSync, readSync, closeSync } from 'node:fs';
+import { interpretConfirmation } from '../dist/confirm.js';
 
 const META = '_meta { block { number timestamp } hasIndexingErrors }';
 const F = 'id symbol lastPriceUSD lastPriceBlockNumber';
@@ -57,7 +58,19 @@ console.log(`
 if (Number(formatUnits(before, 6)) < cost * 0.01) { console.error('Баланса не хватает на весь набор. Ничего не списано.'); process.exit(2); }
 
 process.stderr.write(`Запустить ${cost} платных запроса? Enter — да, Ctrl-C — нет: `);
-const tty = openSync('/dev/tty', 'r'); readSync(tty, Buffer.alloc(8), 0, 8, null); closeSync(tty);
+const tty = openSync('/dev/tty', 'r');
+const buf = Buffer.alloc(64);
+const n = readSync(tty, buf, 0, 64, null);
+closeSync(tty);
+const verdict = interpretConfirmation(n, buf);
+if (!verdict.ok) {
+  const msg = verdict.reason === 'eof'
+    ? 'Ввод закрыт (EOF), подтверждения не было. Ничего не списано.'
+    : `Понято как отказ: ${JSON.stringify(verdict.answer)}. Ничего не списано.`;
+  console.error('');
+  console.error(msg);
+  process.exit(2);
+}
 
 const head = await chainHead();
 for (const e of EXPERIMENTS) {
