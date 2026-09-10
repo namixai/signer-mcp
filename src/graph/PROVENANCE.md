@@ -1,7 +1,7 @@
 # These five files are copies, and that is a liability worth naming
 
 Source of truth: `integrations/graph/src/` in **namixai/signer-ethonline2026**,
-at commit `9538d8f3bc7ea574de7875de97307e139c16dbde`. They are here byte for byte — not
+at commit `27a4f1f97c00a0e36604069adb273cfb6f1e2666`. They are here byte for byte — not
 adapted, not "ported".
 
 🔴 **This line is the drift guard's default target, so it is not decoration.** The guard

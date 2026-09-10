@@ -107,6 +107,13 @@ export function priceQueryBySymbol(symbol, limit = SYMBOL_MATCH_LIMIT) {
  * meant is not here" when the truth was "it did not fit".
  */
 export function shapeSymbolMatches(rawBody, limit = SYMBOL_MATCH_LIMIT) {
+  // 🔴 ТОТ ЖЕ ДИАПАЗОН, ЧТО И У ЗАПРОСА. Без этого `shapeSymbolMatches(rows(0), 0)`
+  // возвращал ok и `saturated: true` — то есть ПУСТОЙ ответ объявлялся достигнутым
+  // потолком. Хуже обычной ошибки: вызывающий читает «есть ещё, просто не поместились»
+  // там, где совпадений нет вовсе, и идёт сужать запрос вместо того, чтобы менять токен.
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    return { ok: false, reason: 'bad_limit', detail: `limit must be an integer in 1..1000, got ${limit}` };
+  }
   let parsed;
   try {
     parsed = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;

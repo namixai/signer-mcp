@@ -206,7 +206,14 @@ export async function handleGetVerifiedPrice(
   // Считает исток, а не эта копия: два места, вычисляющих одно и то же, расходятся
   // молча, и уже расходились — флаг жил здесь, пока комментарий в fetch.js обещал его там.
   const shaped: any = shapeSymbolMatches(parsed as object);
-  const saturated = symbol !== null && address === null && shaped?.saturated === true;
+  // 🔴 Отказ разбора ПРОБРАСЫВАЕТСЯ, а не проглатывается. Раньше при `ok: false` код шёл
+  // дальше на том же разобранном теле: без `data.tokens` список оказывался пустым и
+  // вызывающий получал общее `not_usable` вместо точного `no_tokens_field`, а `detail`
+  // терялся. Причина, которую заменили на менее точную, — та же потеря, что и молчание.
+  if (shaped?.ok !== true) {
+    return refuse("usability", String(shaped?.reason ?? "unshapeable_response"), shaped?.detail, timings);
+  }
+  const saturated = symbol !== null && address === null && shaped.saturated === true;
 
   const rows: any[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
   const available: string[] = Array.isArray((parsed as any)?.data?.tokens)

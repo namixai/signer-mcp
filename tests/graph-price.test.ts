@@ -446,3 +446,36 @@ describe("каждая строка токена проверяется своя
     expect(out.refused.map((r: any) => r.reason)).toEqual(["price_absent_or_zero"]);
   });
 });
+
+// Точная причина не заменяется общей.
+//
+// Ревью на #20: при `ok: false` от shapeSymbolMatches код шёл дальше на том же теле, и
+// вызывающий получал `not_usable` вместо `no_tokens_field`, а `detail` терялся. Причина,
+// подменённая менее точной, — та же потеря информации, что и молчание.
+describe("отказ разбора ответа доезжает своим именем", () => {
+  it("нет поля tokens — так и сказано, а не «непригодно»", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: true, status: 200, attestationHeader: "h",
+        rawBody: JSON.stringify({ data: { _meta: { block: { number: "1000", timestamp: "1757400000" } } } }),
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok).toBe(false);
+    expect(out.cause, "точную причину заменили общей").toBe("no_tokens_field");
+  });
+
+  it("GraphQL-ошибки в теле называются ими, а не отсутствием цены", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: true, status: 200, attestationHeader: "h",
+        rawBody: JSON.stringify({ errors: [{ message: "bad field" }] }),
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("graphql_errors");
+    expect(out.detail).not.toBeNull();
+  });
+});
