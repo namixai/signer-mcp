@@ -360,3 +360,62 @@ describe("повтор не покупает заново то, что уже к
     expect(causes).toContain("paid_request_failed");
   });
 });
+
+// Четыре находки из тела ревью на #19: тул не имеет права падать, и негодный вход не
+// имеет права стоить денег.
+describe("платный путь не роняет инструмент и не берёт денег за заведомо негодное", () => {
+  const withHeader = async (hdr: unknown) => {
+    const A = await import("../src/graph/attestation.js");
+    return {
+      ...passingBase(),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([{ symbol: "X" }]), attestationHeader: hdr }),
+      parseAttestationHeader: A.parseAttestationHeader,
+    } as unknown as PriceDeps;
+  };
+
+  it("отсутствующий и кривой заголовок аттестации — отказ по имени, а не исключение", async () => {
+    for (const [hdr, cause] of [
+      [null, "attestation_header_missing"],
+      ["не json", "attestation_header_unreadable"],
+    ] as const) {
+      const out = read(await handleGetVerifiedPrice({ symbol: "X" }, await withHeader(hdr)));
+      expect(out.ok).toBe(false);
+      expect(out.cause).toBe(cause);
+    }
+  });
+
+  it("дробная полоса отвергается ДО оплаты", async () => {
+    let paid = false;
+    const deps = { ...passingBase(), paidQuery: async () => { paid = true; return { ok: true }; } } as unknown as PriceDeps;
+    for (const bad of [12.5, -1, 10_001, NaN, "5"]) {
+      const out = read(await handleGetVerifiedPrice({ symbol: "X", band_bps: bad } as any, deps));
+      expect(out.ok, `принята полоса ${String(bad)}`).toBe(false);
+      expect(out.cause).toBe("bad_request");
+    }
+    expect(paid, "🔴 заплатили за запрос, который всё равно бы упал").toBe(false);
+    // Целые в диапазоне обязаны проходить, иначе проверка просто запрещает полосу.
+    const good = read(await handleGetVerifiedPrice({ symbol: "X", band_bps: 250 } as any, passingBase()));
+    expect(good.ok).toBe(true);
+  });
+
+  it("null во времени блока не проходит: Number(null) это 0, а ноль конечен", async () => {
+    const body = JSON.parse(BODY([{ symbol: "X" }]));
+    for (const bad of [null, "", false, 0, -5]) {
+      body.data._meta.block.timestamp = bad;
+      const deps = {
+        ...passingBase(),
+        paidQuery: async () => ({ ok: true, status: 200, rawBody: JSON.stringify(body), attestationHeader: "h" }),
+      } as unknown as PriceDeps;
+      const out = read(await handleGetVerifiedPrice({ symbol: "X" }, deps));
+      expect(out.ok, `прошло время блока ${JSON.stringify(bad)}`).toBe(false);
+      expect(out.cause).toBe("missing_block_timestamp");
+    }
+  });
+
+  it("не-2xx ответ несёт статус, а не пустую причину", async () => {
+    const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 503 }) } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "X" }, deps));
+    expect(out.cause).toBe("query_failed");
+    expect(out.detail).toEqual({ status: 503 });
+  });
+});

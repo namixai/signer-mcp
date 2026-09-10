@@ -109,6 +109,16 @@ export async function handleGetVerifiedPrice(
   // and the real Wrapped Ether was not among them — measured on a paid query, 2026-09-10.
   // Anyone can deploy a token and name it anything, so a ticker names a token about as
   // precisely as a first name names a person.
+  // 🔴 ПОЛОСА ПРОВЕРЯЕТСЯ ДО ОПЛАТЫ. Дробное значение доезжало до BigInt внутри снимка и
+  // роняло проход RangeError'ом — то есть цент уже потрачен, а ответа нет и отказа по
+  // имени тоже нет. Негодный вход обязан стоить ноль.
+  if (args.band_bps !== undefined) {
+    const b = args.band_bps;
+    if (typeof b !== "number" || !Number.isInteger(b) || b < 0 || b > 10_000) {
+      return refuse("query", "bad_request", `band_bps must be a whole number of basis points in 0..10000, got ${String(b)}`);
+    }
+  }
+
   let query: string;
   try {
     query = address
@@ -127,13 +137,30 @@ export async function handleGetVerifiedPrice(
   let t = ms();
   const q: any = await deps.paidQuery({ query, ...(args.subgraph_id ? { subgraphId: args.subgraph_id } : {}) });
   timings.query_ms = ms() - t;
-  if (!q?.ok) return refuse("query", String(q?.reason ?? "query_failed"), q?.detail);
+  if (!q?.ok) {
+    // Статус несём всегда: «query_failed» без него не отличает 503 шлюза от отказа платежа.
+    const detail = q?.detail ?? (q?.status !== undefined ? { status: q.status } : null);
+    return refuse("query", String(q?.reason ?? "query_failed"), detail, timings);
+  }
 
   // 2. The signature over the bytes AS THEY ARRIVED. Re-serialising the JSON first
   //    changes the hash, so the raw body travels untouched from fetch to here.
   t = ms();
-  const attestation = deps.parseAttestationHeader(q.attestationHeader);
-  const verification: any = await deps.verifyAttestation(q.rawBody, attestation);
+  // 🔴 Разбор заголовка БРОСАЕТ на отсутствующем и на кривом — это его контракт. Инструмент
+  // обязан отказать по имени, а не упасть: к этому месту платёж уже прошёл, и падение
+  // отнимает у вызывающего и деньги, и причину.
+  let verification: any;
+  try {
+    const attestation = deps.parseAttestationHeader(q.attestationHeader);
+    verification = await deps.verifyAttestation(q.rawBody, attestation);
+  } catch (err: any) {
+    return refuse(
+      "attestation",
+      q.attestationHeader ? "attestation_header_unreadable" : "attestation_header_missing",
+      String(err?.message ?? err),
+      timings,
+    );
+  }
   timings.attestation_ms = ms() - t;
   if (!verification?.ok) {
     return refuse("attestation", String(verification?.reason ?? "attestation_failed"), verification?.detail);
@@ -208,7 +235,12 @@ export async function handleGetVerifiedPrice(
   const observedAtMs = ms();
   // Отметка времени блока приходит в самом ответе, в секундах.
   const rawTs = (parsed as any)?.data?._meta?.block?.timestamp;
-  const blockTsMs = Number.isFinite(Number(rawTs)) ? Number(rawTs) * 1000 : NaN;
+  // 🔴 `Number(null)` — это 0, а ноль конечен. Прежняя проверка на конечность пропускала
+  // null, пустую строку и false, снимок собирался со временем блока в начале эпохи, и
+  // проверка порядка времён при этом молчала. Отсутствующее значение проваливалось в
+  // умолчание и голосовало. Требуем положительное число и ничего кроме.
+  const tsNum = typeof rawTs === "string" || typeof rawTs === "number" ? Number(rawTs) : NaN;
+  const blockTsMs = Number.isFinite(tsNum) && tsNum > 0 ? tsNum * 1000 : NaN;
   if (!Number.isFinite(blockTsMs)) {
     return refuse("snapshot", "missing_block_timestamp", { got: rawTs ?? null }, timings);
   }
