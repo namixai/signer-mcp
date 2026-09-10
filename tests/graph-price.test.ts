@@ -179,7 +179,10 @@ describe("токен называется адресом, тикер — тол�
     const { seen, deps } = capture();
     await handleGetVerifiedPrice({ symbol: "WETH" } as any, deps);
     expect(seen.query).toMatch(/symbol: "WETH"/);
-    expect(seen.query).toMatch(/first: 20/);
+    // Привязано к константе, а не к числу: предел поднят по ревью #22, и тест,
+    // держащий литерал, краснел бы на самой правке вместо того, чтобы её проверять.
+    const { SYMBOL_MATCH_LIMIT } = await import("../src/graph/fetch.js");
+    expect(seen.query).toMatch(new RegExp(`first: ${SYMBOL_MATCH_LIMIT}`));
   });
 
   it("без того и другого — только токены, у которых цена есть", async () => {
@@ -291,5 +294,35 @@ describe("сборка снимка проверяется настоящей, �
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.ok).toBe(false);
     expect(out.cause, "проверка порядка времён не сработала — значение снова не из ответа").toBe("observed_before_block");
+  });
+});
+
+// Ревью на #22 (Major): срезка выдачи была молчаливой. Пагинация не годится — КАЖДАЯ
+// страница здесь платная, и тикер с тысячей однофамильцев опустошил бы кошелёк на одном
+// вопросе. Потолок поднят и объявлен, а насыщение вызывающий обязан увидеть словом.
+describe("срезка выдачи по тикеру видна вызывающему", () => {
+  const bodyOf = (n: number) =>
+    JSON.stringify({
+      data: {
+        tokens: Array.from({ length: n }, (_, i) => ({ symbol: "WETH", id: `0x${i}` })),
+        _meta: { block: { number: "1000", timestamp: "1757400000" }, hasIndexingErrors: false },
+      },
+    });
+  const depsFor = (n: number) =>
+    ({ ...passingBase(), paidQuery: async () => ({ ok: true, status: 200, rawBody: bodyOf(n), attestationHeader: "h" }) }) as unknown as PriceDeps;
+
+  it("ровно на потолке отвечает truncated: true — «есть ли ещё, отсюда не видно»", async () => {
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, depsFor(100)));
+    expect(out.truncated, "насыщение не показано — срезка снова молчаливая").toBe(true);
+  });
+
+  it("ниже потолка — truncated: false, это действительно все совпадения", async () => {
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, depsFor(3)));
+    expect(out.truncated).toBe(false);
+  });
+
+  it("по адресу насыщения быть не может: адрес опознаёт один токен", async () => {
+    const out = read(await handleGetVerifiedPrice({ token_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" }, depsFor(100)));
+    expect(out.truncated).toBe(false);
   });
 });

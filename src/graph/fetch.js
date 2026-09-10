@@ -61,12 +61,27 @@ export function priceQueryByAddress(address) {
  * Kept because a caller may only have a ticker, but it returns everything that matches
  * so the ambiguity is visible rather than resolved by luck — taking the first row would
  * pick a namesake as often as the token meant.
+ *
+ * 🔴 THE LIMIT IS DECLARED, NOT HIDDEN. A page is a paid request here — a cent each — so
+ * fetching pages until they run out spends an amount nobody agreed to in advance, and a
+ * ticker with a thousand namesakes would empty a wallet answering one question. Instead
+ * the ceiling is high enough that hitting it is remarkable, and the caller is told when
+ * it is hit: `saturated` means "there may be more, and this answer cannot see them",
+ * which is a different sentence from "these are all of them". Silently returning the
+ * first twenty said the second while meaning the first.
  */
-export function priceQueryBySymbol(symbol) {
+export const SYMBOL_MATCH_LIMIT = 100;
+
+export function priceQueryBySymbol(symbol, limit = SYMBOL_MATCH_LIMIT) {
   const sym = String(symbol);
   if (!/^[A-Za-z0-9._-]{1,32}$/.test(sym)) throw new Error(`not a plausible symbol: ${symbol}`);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    // The Graph caps `first` at 1000; asking for more is a query the gateway refuses —
+    // and refuses AFTER charging, so the bound is checked here rather than paid for.
+    throw new Error(`limit must be an integer in 1..1000, got ${limit}`);
+  }
   return `{
-  tokens(where: {symbol: "${sym}"}, first: 20) {
+  tokens(where: {symbol: "${sym}"}, first: ${limit}) {
     id symbol lastPriceUSD lastPriceBlockNumber
   }
   _meta { block { number timestamp } hasIndexingErrors }

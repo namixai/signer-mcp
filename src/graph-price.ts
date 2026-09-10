@@ -16,7 +16,7 @@
 
 import {
   paidQuery, priceQueryByAddress, priceQueryBySymbol,
-  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM,
+  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM, SYMBOL_MATCH_LIMIT,
 } from "./graph/fetch.js";
 import { verifyAttestation, parseAttestationHeader } from "./graph/attestation.js";
 import { chainHead, resolveIndexer, arbitrumClient } from "./graph/chain.js";
@@ -171,6 +171,14 @@ export async function handleGetVerifiedPrice(
   } catch (err: any) {
     return refuse("usability", "body_not_json", String(err?.message ?? err));
   }
+  // 🔴 Насыщение выдачи вызывающий обязан УВИДЕТЬ. Ровно `SYMBOL_MATCH_LIMIT` строк
+  // означает не «это все», а «столько поместилось, и есть ли ещё — отсюда не видно».
+  // Раньше срезка была молчаливой, и «настоящего среди них нет» могло на самом деле
+  // значить «настоящий не попал в выдачу» — то есть находка про неуникальность тикера
+  // выглядела бы сильнее, чем данные её держат.
+  const rows: unknown[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
+  const saturated = symbol !== null && address === null && rows.length === SYMBOL_MATCH_LIMIT;
+
   const available: string[] = Array.isArray((parsed as any)?.data?.tokens)
     ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)
     : [];
@@ -188,7 +196,7 @@ export async function handleGetVerifiedPrice(
       String(first?.reason ?? "not_usable"),
       // 🔴 Что БЫЛО в ответе — часть отказа, а не догадка вызывающего. Иначе цент куплен
       // впустую: данные пришли и проверены, а воспользоваться ими нельзя.
-      { asked: symbol ?? "(все пришедшие)", available, per_symbol: checked.map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })) },
+      { asked: symbol ?? "(все пришедшие)", available, truncated: saturated, per_symbol: checked.map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })) },
       timings,
     );
   }
@@ -246,6 +254,7 @@ export async function handleGetVerifiedPrice(
     },
     timings_ms: timings,
     available,
+    truncated: saturated,
     priced: good.map((c) => ({ symbol: c.symbol, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
     refused: checked.filter((c) => c.result?.ok !== true).map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })),
   });
