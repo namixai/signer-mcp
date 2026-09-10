@@ -188,3 +188,50 @@ describe("токен называется адресом, тикер — тол�
     expect(paid, "🔴 заплатили за заведомо негодный запрос").toBe(false);
   });
 });
+
+// 🔴 Растяжка на проводку: все тесты выше подменяют buildSnapshot заглушкой, которая
+// всегда соглашается. Из-за этого настоящая сборка снимка не проверялась НИ РАЗУ — и
+// первый же платный прогон, дошедший до неё, вернул `bad_request: subgraphId missing`.
+// Я передавал `q.subgraphId`, которого paidQuery не возвращает. Цент за мою ошибку.
+//
+// Здесь настоящие usability и snapshot и настоящий записанный ответ с прода: подменены
+// только сеть и платёж. Тест падает, если проводка снова разойдётся.
+describe("сборка снимка проверяется настоящей, а не заглушкой", () => {
+  it("реальный ответ проходит до снимка и даёт цену", async () => {
+    const { readFileSync } = await import("node:fs");
+    const body = readFileSync(
+      process.env.GRAPH_FIXTURE ?? "/tmp/judge/integrations/graph/test/fixtures/sample1.body.json",
+      "utf8",
+    );
+    const meta = JSON.parse(body).data._meta.block;
+    const real = {
+      ...(await import("../src/graph/usability.js")),
+      ...(await import("../src/graph/snapshot.js")),
+    };
+    // Настоящая проверка подписи над настоящей записанной парой «тело + аттестация».
+    // Заглушка на её месте не несла requestCID и responseCID, и снимок отказывался
+    // собираться — то есть заглушка скрывала бы ровно ту проводку, ради которой тест есть.
+    const att = await import("../src/graph/attestation.js");
+    const attRaw = readFileSync(
+      (process.env.GRAPH_FIXTURE ?? "/tmp/judge/integrations/graph/test/fixtures/sample1.body.json")
+        .replace(".body.json", ".attestation.json"),
+      "utf8",
+    );
+    const deps = {
+      ...real,
+      ...att,
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: body, attestationHeader: attRaw }),
+      // Голова цепи берётся из САМОГО ответа: иначе запись четырёхдневной давности
+      // законно отвергается как source_stale, и тест ловил бы возраст, а не проводку.
+      chainHead: async () => BigInt(meta.number),
+      resolveIndexer: async () => ({ ok: true, indexer: "0xind" }),
+      arbitrumClient: () => ({}),
+    } as unknown as PriceDeps;
+
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok, `сборка отказала: ${out.cause} / ${JSON.stringify(out.detail)}`).toBe(true);
+    expect(out.snapshot).toBeDefined();
+    expect(out.priced[0].symbol).toBe("WETH");
+    expect(Number(out.priced[0].price_usd)).toBeGreaterThan(0);
+  });
+});

@@ -17,3 +17,4 @@ export function priceQueryByAddress(address: string): string;
 export function priceQueryBySymbol(symbol: string): string;
 export const RECENT_PRICED_QUERY: string;
 export const PRICE_QUERY: string;
+export const UNISWAP_V3_ETHEREUM: string;

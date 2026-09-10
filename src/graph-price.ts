@@ -14,7 +14,10 @@
 // 🔴 WHERE THIS RUNS: outside the enclave, like everything else that touches a
 // network. It reads and decides; it signs nothing a venue would execute.
 
-import { paidQuery, priceQueryByAddress, priceQueryBySymbol, RECENT_PRICED_QUERY } from "./graph/fetch.js";
+import {
+  paidQuery, priceQueryByAddress, priceQueryBySymbol,
+  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM,
+} from "./graph/fetch.js";
 import { verifyAttestation, parseAttestationHeader } from "./graph/attestation.js";
 import { chainHead, resolveIndexer, arbitrumClient } from "./graph/chain.js";
 import { checkUsable } from "./graph/usability.js";
@@ -194,7 +197,11 @@ export async function handleGetVerifiedPrice(
   // 6. The answer, which states what was NOT checked as plainly as what was.
   const observedAtMs = ms();
   const snap: any = deps.buildSnapshot({
-    subgraphId: q.subgraphId ?? args.subgraph_id,
+    // 🔴 `paidQuery` НЕ возвращает subgraph id — я решил, что возвращает, и снимок
+    // отказывался собираться с `bad_request: subgraphId missing`. Нашлось платным
+    // прогоном 10.09: прежние падали на годности и до сборки не доходили. Берём тот же
+    // умолчательный идентификатор, которым запрос и уходил.
+    subgraphId: args.subgraph_id ?? UNISWAP_V3_ETHEREUM,
     symbol,
     verification,
     usability,
