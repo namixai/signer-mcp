@@ -21,9 +21,9 @@ const VENDORED = new URL("../src/graph/", import.meta.url).pathname;
 const REPO = process.env.GRAPH_SOURCE_REPO ?? join(process.env.HOME ?? "", "ethonline-sub");
 const REF = process.env.GRAPH_SOURCE_REF ?? "origin/main";
 
-function fromGit(file: string): Buffer | null {
+function fromGit(file: string, dir = "src"): Buffer | null {
   try {
-    return execFileSync("git", ["-C", REPO, "show", `${REF}:integrations/graph/src/${file}`], {
+    return execFileSync("git", ["-C", REPO, "show", `${REF}:integrations/graph/${dir}/${file}`], {
       maxBuffer: 8 * 1024 * 1024,
     });
   } catch {
@@ -46,6 +46,18 @@ describe("перенесённые модули не разошлись с ис�
       const theirs = fromGit(f);
       expect(theirs, `в ${source} нет ${f} — файл переименовали или удалили`).not.toBeNull();
       expect(sha(readFileSync(join(VENDORED, f))), `${f} разошёлся с ${source}`).toBe(sha(theirs!));
+    }
+  });
+
+  // Фикстуры — тоже копии, и расходятся так же тихо.
+  it.skipIf(!source)("записанные ответы тоже не разошлись с источником", () => {
+    const dir = new URL("./fixtures/", import.meta.url).pathname;
+    const fx = readdirSync(dir).filter((f) => f.endsWith(".json"));
+    expect(fx.length, "фикстур нет — тест проводки читает неизвестно что").toBeGreaterThan(0);
+    for (const f of fx) {
+      const theirs = fromGit(f, "test/fixtures");
+      expect(theirs, `в источнике нет фикстуры ${f}`).not.toBeNull();
+      expect(sha(readFileSync(join(dir, f))), `${f} разошлась с ${source}`).toBe(sha(theirs!));
     }
   });
 

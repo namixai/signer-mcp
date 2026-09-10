@@ -16,6 +16,13 @@ import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 // Тело в форме НАСТОЯЩЕГО ответа шлюза: `_meta.block` есть всегда, и без него снимок
 // не может отличить время блока от времени наблюдения. Заглушка без него описывала бы
 // ответ, которого не бывает.
+
+// 🔴 Фикстура ЛЕЖИТ В РЕПОЗИТОРИИ, а не на чьей-то машине. Первая редакция читала её из
+// /tmp на моём ноутбуке: локально зелено, в CI — ENOENT. Тест, который проходит только
+// у автора, ничего не проверяет. Это запись настоящего ответа шлюза, и она едет вместе
+// с кодом; сторож дрейфа сверяет её с истоком так же, как перенесённые модули.
+const FIXTURE = new URL("./fixtures/sample1.body.json", import.meta.url).pathname;
+
 const BODY = (tokens: unknown[]) =>
   JSON.stringify({
     data: { tokens, _meta: { block: { number: "1000", timestamp: "1757400000" }, hasIndexingErrors: false } },
@@ -212,7 +219,7 @@ describe("сборка снимка проверяется настоящей, �
   it("реальный ответ проходит до снимка и даёт цену", async () => {
     const { readFileSync } = await import("node:fs");
     const body = readFileSync(
-      process.env.GRAPH_FIXTURE ?? "/tmp/judge/integrations/graph/test/fixtures/sample1.body.json",
+      FIXTURE,
       "utf8",
     );
     const meta = JSON.parse(body).data._meta.block;
@@ -225,8 +232,7 @@ describe("сборка снимка проверяется настоящей, �
     // собираться — то есть заглушка скрывала бы ровно ту проводку, ради которой тест есть.
     const att = await import("../src/graph/attestation.js");
     const attRaw = readFileSync(
-      (process.env.GRAPH_FIXTURE ?? "/tmp/judge/integrations/graph/test/fixtures/sample1.body.json")
-        .replace(".body.json", ".attestation.json"),
+      FIXTURE.replace(".body.json", ".attestation.json"),
       "utf8",
     );
     const deps = {
@@ -265,8 +271,7 @@ describe("сборка снимка проверяется настоящей, �
   // Блок из будущего обязан быть отвергнут — иначе значение снова берётся не оттуда.
   it("блок из будущего отвергается: время берётся из ответа, а не подставляется", async () => {
     const { readFileSync } = await import("node:fs");
-    const path = process.env.GRAPH_FIXTURE ?? "/tmp/judge/integrations/graph/test/fixtures/sample1.body.json";
-    const orig = JSON.parse(readFileSync(path, "utf8"));
+    const orig = JSON.parse(readFileSync(FIXTURE, "utf8"));
     const future = JSON.parse(JSON.stringify(orig));
     future.data._meta.block.timestamp = String(Math.floor(Date.now() / 1000) + 86_400);
     const bodyFuture = JSON.stringify(future);
