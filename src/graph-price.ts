@@ -196,19 +196,35 @@ export async function handleGetVerifiedPrice(
 
   // 6. The answer, which states what was NOT checked as plainly as what was.
   const observedAtMs = ms();
+  // Отметка времени блока приходит в самом ответе, в секундах.
+  const rawTs = (parsed as any)?.data?._meta?.block?.timestamp;
+  const blockTsMs = Number.isFinite(Number(rawTs)) ? Number(rawTs) * 1000 : NaN;
+  if (!Number.isFinite(blockTsMs)) {
+    return refuse("snapshot", "missing_block_timestamp", { got: rawTs ?? null }, timings);
+  }
   const snap: any = deps.buildSnapshot({
     // 🔴 `paidQuery` НЕ возвращает subgraph id — я решил, что возвращает, и снимок
     // отказывался собираться с `bad_request: subgraphId missing`. Нашлось платным
     // прогоном 10.09: прежние падали на годности и до сборки не доходили. Берём тот же
     // умолчательный идентификатор, которым запрос и уходил.
     subgraphId: args.subgraph_id ?? UNISWAP_V3_ETHEREUM,
-    symbol,
+    // 🔴 Тикер НАЙДЕННОГО токена, а не спрошенного. При поиске по адресу спрошенного
+    // тикера нет вовсе, и снимок отказывался собираться с `bad_request: symbol missing` —
+    // второй платный прогон, второй раз одна и та же дыра: путь, которого не касался ни
+    // один тест. Заодно так правильнее по смыслу: снимок описывает то, что вернулось.
+    symbol: good[0].symbol ?? usability.symbol ?? symbol,
     verification,
     usability,
     indexer,
     chainHead: head,
     observedAtMs,
-    blockTimestampMs: observedAtMs,
+    // 🔴 ВРЕМЯ БЛОКА, А НЕ ВРЕМЯ НАБЛЮДЕНИЯ. Раньше здесь стояло `observedAtMs`, и это
+    // не «неточность»: у снимка есть проверка `observed_before_block`, ловящая запись,
+    // которая claims быть старше блока, который описывает. Подставляя одно и то же
+    // значение с обеих сторон, я делал её тождественно истинной — проверка стояла и не
+    // могла сработать никогда. Найдено чтением контракта buildSnapshot, а не платным
+    // прогоном; предыдущие два таких же нашлись за цент каждый.
+    blockTimestampMs: blockTsMs,
     ...(typeof args.band_bps === "number" ? { bandBps: args.band_bps } : {}),
   });
   if (!snap?.ok) {

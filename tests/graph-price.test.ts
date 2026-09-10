@@ -12,12 +12,21 @@
 import { describe, it, expect } from "vitest";
 import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 
+
+// Тело в форме НАСТОЯЩЕГО ответа шлюза: `_meta.block` есть всегда, и без него снимок
+// не может отличить время блока от времени наблюдения. Заглушка без него описывала бы
+// ответ, которого не бывает.
+const BODY = (tokens: unknown[]) =>
+  JSON.stringify({
+    data: { tokens, _meta: { block: { number: "1000", timestamp: "1757400000" }, hasIndexingErrors: false } },
+  });
+
 const read = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
 // Заглушки, при которых проход доходит до конца. Каждый тест ломает РОВНО ОДНУ.
 const passingBase = (): PriceDeps =>
   ({
-    paidQuery: async () => ({ ok: true, status: 200, rawBody: '{"data":{}}', attestationHeader: "hdr", subgraphId: "sub" }),
+    paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([]), attestationHeader: "hdr", subgraphId: "sub" }),
     parseAttestationHeader: () => ({ parsed: true }),
     verifyAttestation: async () => ({ ok: true, allocationId: "0xalloc", subgraphDeploymentID: "0xdep" }),
     chainHead: async () => 1000n,
@@ -108,7 +117,7 @@ describe("цент обязан принести данные, а не тупи�
       ...passingBase(),
       paidQuery: async () => ({
         ok: true, status: 200, attestationHeader: "hdr", subgraphId: "sub",
-        rawBody: JSON.stringify({ data: { tokens: syms.map((s) => ({ symbol: s })) } }),
+        rawBody: BODY(syms.map((s) => ({ symbol: s }))),
       }),
     }) as unknown as PriceDeps;
 
@@ -153,7 +162,7 @@ describe("токен называется адресом, тикер — тол�
       ...passingBase(),
       paidQuery: async (o: any) => {
         seen.query = o?.query;
-        return { ok: true, status: 200, attestationHeader: "hdr", rawBody: '{"data":{"tokens":[{"symbol":"X"}]}}' };
+        return { ok: true, status: 200, attestationHeader: "hdr", rawBody: BODY([{ symbol: "X" }]) };
       },
     } as unknown as PriceDeps;
     return { seen, deps };
@@ -228,10 +237,59 @@ describe("сборка снимка проверяется настоящей, �
       arbitrumClient: () => ({}),
     } as unknown as PriceDeps;
 
+    // 🔴 ОБА способа адресации, а не один. Первый раз этот тест гонял только тикер, и
+    // путь по адресу ушёл в бой непроверенным: снимок отказался собираться, потому что
+    // при поиске по адресу тикера нет. Дважды подряд платный прогон находил дыру там,
+    // куда тест не заглядывал, — поэтому здесь перебор, а не один случай.
+    const wethId = JSON.parse(body).data.tokens.find((t: any) => t.symbol === "WETH")?.id;
+    expect(wethId, "в записанном ответе нет WETH — фикстура не та").toBeTruthy();
+
+    for (const [how, args] of [
+      ["по тикеру", { symbol: "WETH" }],
+      ["по адресу", { token_address: wethId }],
+    ] as const) {
+      const out = read(await handleGetVerifiedPrice(args as any, deps));
+      expect(out.ok, `${how}: сборка отказала — ${out.cause} / ${JSON.stringify(out.detail)}`).toBe(true);
+      expect(out.snapshot, how).toBeDefined();
+      expect(out.priced[0].symbol, how).toBe("WETH");
+      expect(Number(out.priced[0].price_usd), how).toBeGreaterThan(0);
+    }
+  });
+
+  // 🔴 Доказательство, что время блока действительно ЧИТАЕТСЯ из ответа. Раньше сюда
+  // подставлялось время наблюдения, отчего проверка «снимок старше описываемого блока»
+  // становилась тождественно истинной: она стояла и не могла сработать никогда.
+  // Блок из будущего обязан быть отвергнут — иначе значение снова берётся не оттуда.
+  it("блок из будущего отвергается: время берётся из ответа, а не подставляется", async () => {
+    const { readFileSync } = await import("node:fs");
+    const path = process.env.GRAPH_FIXTURE ?? "/tmp/judge/integrations/graph/test/fixtures/sample1.body.json";
+    const orig = JSON.parse(readFileSync(path, "utf8"));
+    const future = JSON.parse(JSON.stringify(orig));
+    future.data._meta.block.timestamp = String(Math.floor(Date.now() / 1000) + 86_400);
+    const bodyFuture = JSON.stringify(future);
+
+    const real = {
+      ...(await import("../src/graph/usability.js")),
+      ...(await import("../src/graph/snapshot.js")),
+      ...(await import("../src/graph/attestation.js")),
+    };
+    const deps = {
+      ...real,
+      // Подпись здесь не проверяем: тело изменено, и настоящая проверка законно отвергла
+      // бы его раньше, чем мы дошли бы до сборки. Проверяем именно порядок времён.
+      parseAttestationHeader: () => ({}),
+      verifyAttestation: async () => ({
+        ok: true, allocationId: "0x1", subgraphDeploymentID: "0x2",
+        requestCID: "0xreq", responseCID: "0xres",
+      }),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: bodyFuture, attestationHeader: "h" }),
+      chainHead: async () => BigInt(orig.data._meta.block.number),
+      resolveIndexer: async () => ({ ok: true, indexer: "0xind" }),
+      arbitrumClient: () => ({}),
+    } as unknown as PriceDeps;
+
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
-    expect(out.ok, `сборка отказала: ${out.cause} / ${JSON.stringify(out.detail)}`).toBe(true);
-    expect(out.snapshot).toBeDefined();
-    expect(out.priced[0].symbol).toBe("WETH");
-    expect(Number(out.priced[0].price_usd)).toBeGreaterThan(0);
+    expect(out.ok).toBe(false);
+    expect(out.cause, "проверка порядка времён не сработала — значение снова не из ответа").toBe("observed_before_block");
   });
 });
