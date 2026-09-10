@@ -16,7 +16,7 @@
 
 import {
   paidQuery, priceQueryByAddress, priceQueryBySymbol,
-  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM, SYMBOL_MATCH_LIMIT,
+  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM, shapeSymbolMatches,
 } from "./graph/fetch.js";
 import { verifyAttestation, parseAttestationHeader } from "./graph/attestation.js";
 import { chainHead, resolveIndexer, arbitrumClient } from "./graph/chain.js";
@@ -176,8 +176,10 @@ export async function handleGetVerifiedPrice(
   // Раньше срезка была молчаливой, и «настоящего среди них нет» могло на самом деле
   // значить «настоящий не попал в выдачу» — то есть находка про неуникальность тикера
   // выглядела бы сильнее, чем данные её держат.
-  const rows: unknown[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
-  const saturated = symbol !== null && address === null && rows.length === SYMBOL_MATCH_LIMIT;
+  // Считает исток, а не эта копия: два места, вычисляющих одно и то же, расходятся
+  // молча, и уже расходились — флаг жил здесь, пока комментарий в fetch.js обещал его там.
+  const shaped: any = shapeSymbolMatches(parsed as object);
+  const saturated = symbol !== null && address === null && shaped?.saturated === true;
 
   const available: string[] = Array.isArray((parsed as any)?.data?.tokens)
     ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)

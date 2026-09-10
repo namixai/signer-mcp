@@ -89,6 +89,37 @@ export function priceQueryBySymbol(symbol, limit = SYMBOL_MATCH_LIMIT) {
 }
 
 /**
+ * Read a symbol query's answer, and say whether it was cut off.
+ *
+ * 🔴 THE PROMISE HAS TO LIVE SOMEWHERE. `priceQueryBySymbol` above explains that
+ * saturation is reported rather than inferred, and until this existed nothing in this
+ * package reported it — the flag was computed by a consumer, so a caller reading these
+ * files was promised a contract the files did not keep. Review on #22 caught exactly that.
+ *
+ * `saturated` is true when the answer holds precisely `limit` rows. That does NOT mean
+ * "these are all of them" and it does not mean "there are more": it means the ceiling was
+ * reached and whether anything lies beyond it cannot be seen from here. Saying that is
+ * the whole point — a truncated list of namesakes could otherwise support "the token you
+ * meant is not here" when the truth was "it did not fit".
+ */
+export function shapeSymbolMatches(rawBody, limit = SYMBOL_MATCH_LIMIT) {
+  let parsed;
+  try {
+    parsed = typeof rawBody === 'string' ? JSON.parse(rawBody) : rawBody;
+  } catch (err) {
+    return { ok: false, reason: 'body_not_json', detail: String(err?.message ?? err) };
+  }
+  if (Array.isArray(parsed?.errors) && parsed.errors.length > 0) {
+    return { ok: false, reason: 'graphql_errors', detail: parsed.errors };
+  }
+  const tokens = parsed?.data?.tokens;
+  if (!Array.isArray(tokens)) {
+    return { ok: false, reason: 'no_tokens_field', detail: typeof tokens };
+  }
+  return { ok: true, tokens, saturated: tokens.length === limit, limit };
+}
+
+/**
  * The most recently priced tokens that actually carry a price.
  *
  * 🔴 The filter is the whole point. Ordering by `lastPriceBlockNumber` alone returns

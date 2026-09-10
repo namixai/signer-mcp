@@ -19,3 +19,8 @@ export const SYMBOL_MATCH_LIMIT: number;
 export const RECENT_PRICED_QUERY: string;
 export const PRICE_QUERY: string;
 export const UNISWAP_V3_ETHEREUM: string;
+export interface SymbolMatches {
+  ok: boolean; reason?: string; detail?: unknown;
+  tokens?: Array<Record<string, unknown>>; saturated?: boolean; limit?: number;
+}
+export function shapeSymbolMatches(rawBody: string | object, limit?: number): SymbolMatches;
