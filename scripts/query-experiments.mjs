@@ -17,6 +17,7 @@ import { createPublicClient, http, erc20Abi, formatUnits } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { base } from 'viem/chains';
 import { openSync, readSync, closeSync } from 'node:fs';
+import { interpretConfirmation } from '../dist/confirm.js';
 
 const META = '_meta { block { number timestamp } hasIndexingErrors }';
 const F = 'id symbol lastPriceUSD lastPriceBlockNumber';
@@ -61,12 +62,13 @@ const tty = openSync('/dev/tty', 'r');
 const buf = Buffer.alloc(64);
 const n = readSync(tty, buf, 0, 64, null);
 closeSync(tty);
-// 🔴 Раньше годился ЛЮБОЙ ввод: «no», «стоп» и случайная клавиша одинаково означали
-// «да». Согласие — это пустая строка (просто Enter) или явное y/yes; всё прочее отказ.
-const answer = buf.slice(0, n).toString('utf8').trim().toLowerCase();
-if (answer !== '' && answer !== 'y' && answer !== 'yes') {
-  console.error(`
-Понято как отказ: ${JSON.stringify(answer)}. Ничего не списано.`);
+const verdict = interpretConfirmation(n, buf);
+if (!verdict.ok) {
+  const msg = verdict.reason === 'eof'
+    ? 'Ввод закрыт (EOF), подтверждения не было. Ничего не списано.'
+    : `Понято как отказ: ${JSON.stringify(verdict.answer)}. Ничего не списано.`;
+  console.error('');
+  console.error(msg);
   process.exit(2);
 }
 

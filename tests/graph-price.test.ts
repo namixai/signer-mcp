@@ -337,7 +337,15 @@ describe("срезка выдачи по тикеру видна вызываю�
   });
 
   it("по адресу насыщения быть не может: адрес опознаёт один токен", async () => {
-    const out = read(await handleGetVerifiedPrice({ token_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" }, depsFor(100)));
+    const addr = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+    // Строки несут ТОТ адрес, о котором спрашиваем: иначе тест мерил бы не насыщение, а
+    // сверку адреса, которая теперь стоит отдельно и проверяется своим тестом.
+    const rows = Array.from({ length: 100 }, () => ({ symbol: "WETH", id: addr.toLowerCase() }));
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY(rows), attestationHeader: "h" }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ token_address: addr }, deps));
     expect(out.truncated).toBe(false);
   });
 });
@@ -477,5 +485,66 @@ describe("отказ разбора ответа доезжает своим и�
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.cause).toBe("graphql_errors");
     expect(out.detail).not.toBeNull();
+  });
+});
+
+// Спросили адрес — сверяем адрес.
+//
+// Ревью на #20 (Major): по адресу принималась любая пришедшая строка, без сравнения
+// `row.id` с запрошенным. Это та же находка про однофамильцев с другой стороны — там мы
+// не могли отличить нужный токен от тёзки, здесь просто верили, что вернули нужный.
+// Кривой ответ собрал бы снимок ЧУЖОГО токена под нашим вопросом.
+describe("ответ на запрос по адресу сверяется с адресом", () => {
+  const WETH = "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2";
+  const OTHER = "0x1111111111111111111111111111111111111111";
+  const depsWith = (rows: unknown[]) =>
+    ({
+      ...passingBase(),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY(rows), attestationHeader: "h" }),
+    }) as unknown as PriceDeps;
+
+  it("вернули другой токен — отказ, а не снимок чужого", async () => {
+    const out = read(await handleGetVerifiedPrice({ token_address: WETH }, depsWith([{ symbol: "WETH", id: OTHER }])));
+    expect(out.ok, "собран снимок токена, которого мы не спрашивали").toBe(false);
+    expect(out.cause).toBe("token_not_found");
+  });
+
+  it("нужная строка выбирается среди чужих", async () => {
+    const rows = [
+      { symbol: "WETH", id: OTHER, lastPriceUSD: "999", lastPriceBlockNumber: "1000" },
+      { symbol: "WETH", id: WETH.toLowerCase(), lastPriceUSD: "2400", lastPriceBlockNumber: "1000" },
+    ];
+    const real = await import("../src/graph/usability.js");
+    const out = read(await handleGetVerifiedPrice({ token_address: WETH }, { ...depsWith(rows), checkUsable: real.checkUsable } as any));
+    expect(out.ok, `${out.cause} ${JSON.stringify(out.detail)}`).toBe(true);
+    expect(out.priced).toHaveLength(1);
+    expect(out.priced[0].price_usd).toBe("2400");
+  });
+
+  it("регистр адреса не решает: субграф ключует в нижнем", async () => {
+    const rows = [{ symbol: "WETH", id: WETH.toLowerCase(), lastPriceUSD: "2400", lastPriceBlockNumber: "1000" }];
+    const real = await import("../src/graph/usability.js");
+    for (const asked of [WETH, WETH.toLowerCase(), WETH.toUpperCase().replace("0X", "0x")]) {
+      const out = read(await handleGetVerifiedPrice({ token_address: asked }, { ...depsWith(rows), checkUsable: real.checkUsable } as any));
+      expect(out.ok, `не нашёлся при написании ${asked}`).toBe(true);
+    }
+  });
+});
+
+// Статус не теряется, когда есть деталь.
+describe("отказ несёт и код, и то, что сказал шлюз", () => {
+  it("когда есть оба — в ответе оба", async () => {
+    const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 503, detail: "upstream down" }) } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    // 🔴 `??` отбрасывал статус ровно там, где деталь есть, — то есть в самых
+    // информативных случаях: знаешь, ЧТО сказали, и не знаешь, каким кодом.
+    expect(out.detail).toEqual({ status: 503, detail: "upstream down" });
+  });
+
+  it("когда есть только одно — оно и приходит", async () => {
+    const onlyStatus = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 502 }) } as unknown as PriceDeps;
+    expect(read(await handleGetVerifiedPrice({ symbol: "WETH" }, onlyStatus)).detail).toEqual({ status: 502 });
+    const onlyDetail = { ...passingBase(), paidQuery: async () => ({ ok: false, detail: "boom" }) } as unknown as PriceDeps;
+    expect(read(await handleGetVerifiedPrice({ symbol: "WETH" }, onlyDetail)).detail).toBe("boom");
   });
 });

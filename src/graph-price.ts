@@ -139,7 +139,13 @@ export async function handleGetVerifiedPrice(
   timings.query_ms = ms() - t;
   if (!q?.ok) {
     // Статус несём всегда: «query_failed» без него не отличает 503 шлюза от отказа платежа.
-    const detail = q?.detail ?? (q?.status !== undefined ? { status: q.status } : null);
+    // 🔴 Оба, а не одно из двух. `??` отбрасывал статус, как только была деталь, — то
+    // есть ровно в самых информативных случаях, где хочется знать и что сказал шлюз, и
+    // каким кодом он это сказал.
+    const detail =
+      q?.detail !== undefined && q?.status !== undefined
+        ? { status: q.status, detail: q.detail }
+        : (q?.detail ?? (q?.status !== undefined ? { status: q.status } : null));
     return refuse("query", String(q?.reason ?? "query_failed"), detail, timings);
   }
 
@@ -227,7 +233,17 @@ export async function handleGetVerifiedPrice(
   // вердикт пятикратно. Ровно там, где неуникальность тикера и есть предмет разговора.
   const meta = (parsed as any)?.data?._meta;
   const isolate = (row: any) => ({ data: { tokens: [row], _meta: meta } });
-  const wanted: any[] = address || !symbol ? rows : rows.filter((r: any) => r?.symbol === symbol);
+  // 🔴 СПРОСИЛИ АДРЕС — СВЕРЯЕМ АДРЕС. Раньше по адресу принималась любая пришедшая
+  // строка, без сравнения `row.id` с запрошенным. Это та же находка про однофамильцев,
+  // только с другой стороны: там мы не могли отличить нужный токен от тёзки, здесь —
+  // просто верили, что вернули запрошенный. Кривой ответ собрал бы снимок ЧУЖОГО токена
+  // под нашим вопросом, и подпись легла бы на него.
+  const norm = (v: unknown) => String(v ?? "").toLowerCase();
+  const wanted: any[] = address
+    ? rows.filter((r: any) => norm(r?.id) === norm(address))
+    : symbol
+      ? rows.filter((r: any) => r?.symbol === symbol)
+      : rows;
   const checked = wanted.map((row: any) => ({
     symbol: row?.symbol,
     id: row?.id,
