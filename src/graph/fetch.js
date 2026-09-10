@@ -23,6 +23,10 @@ export const TESTNET_GATEWAY = 'https://testnet.gateway.thegraph.com/api/x402/su
 // Base mainnet, as the live gateway challenge states.
 export const PAYMENT_NETWORK = 'eip155:8453';
 
+// Двукратный запас к нынешней цене в цент: хватает на подорожание, но не на порядок.
+// Переопределяется только через окружение — см. paidQuery.
+export const MAX_PER_PAYMENT_DEFAULT = '$0.02';
+
 export const UNISWAP_V3_ETHEREUM = '4cKy6QQMc5tpfdx8yxfYeb9TLZmgLQe44ddW1G7NwkA6';
 
 /** Price and freshness. Both fields are load-bearing; see usability.js. */
@@ -249,7 +253,18 @@ export async function paidQuery({
   // retried — a paid path that could not pay. Caught by static analysis of the
   // package's own type declarations; untestable here by running it, because spending
   // is gated. When a path cannot be exercised, the types are the only check.
-  const client = new x402Client().register(PAYMENT_NETWORK, new ExactEvmScheme(account));
+  // 🔴 ПОТОЛОК НА ПЛАТЁЖ, И ОН НЕ У АГЕНТА. Ревью на signer-mcp#19 право в сути и
+  // неточно в деталях: потолок тут есть и до этой правки — библиотека режет на `$1` за
+  // платёж по умолчанию. Только наш запрос стоит цент, то есть защита была в СТО РАЗ
+  // слабее нужной: вызов, подорожавший до девяноста девяти центов, подписался бы молча.
+  //
+  // Значение приходит из окружения, как и ключ: его задаёт тот, чьи деньги, а не тот,
+  // кто вызывает инструмент. Аргумента для него нет намеренно — иначе агент, которому
+  // дали этот модуль, поднял бы себе потолок сам.
+  const client = x402Client.fromConfig({
+    schemes: [{ network: PAYMENT_NETWORK, client: new ExactEvmScheme(account) }],
+    spendControls: { maxAmountPerPayment: process.env.X402_MAX_PER_PAYMENT ?? MAX_PER_PAYMENT_DEFAULT },
+  });
   const paidFetch = wrapFetchWithPayment(fetchImpl, client);
 
   let res;

@@ -134,7 +134,13 @@ export async function verifyAttestation(rawBody, attestation, network = GRAPH_NE
   //
   // responseCID считается по ТОЧНЫМ байтам ответа, и догадка о типе — последнее, что здесь
   // нужно. Тело обязано быть строкой (проверено выше) и кодируется как текст, явно.
-  const computed = keccak256(stringToBytes(rawBody));
+  // 🔴 И ВЕТКА ПО ТИПУ. Функция объявляет, что принимает Uint8Array, и до этой правки
+  // прогоняла его через stringToBytes — то есть хешировала текстовое представление
+  // массива, а не сами байты. Замер: одно и то же тело строкой проходит, байтами даёт
+  // `response_cid_mismatch`. Опаснее всего то, ЧТО именно ломалось: сверка подписи
+  // индексера начинала проверять не то, что пришло, и молча объявляла годный ответ
+  // подделанным. Найдено ревью CodeRabbit на signer-mcp#19.
+  const computed = keccak256(typeof rawBody === 'string' ? stringToBytes(rawBody) : rawBody);
   if (computed !== attestation.responseCID) {
     return {
       ok: false,

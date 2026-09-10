@@ -244,6 +244,12 @@ export async function handleGetVerifiedPrice(
   return toolJson({
     ok: true,
     snapshot: snap.snapshot,
+    // 🔴 ЕДИНСТВЕННАЯ ПОДПИСЫВАЕМАЯ ФОРМА. `dataText` — это точные байты, которые
+    // buildSnapshot сериализовал и которые предназначены к подписи ключом данных.
+    // Собрать их заново из `snapshot` нельзя: порядок ключей и пробелы у другого
+    // сериализатора будут иными, подпись ляжет на другие байты и не сойдётся. Ответ
+    // ронял это поле, то есть подписывать было нечего. Ревью CodeRabbit на #19.
+    dataText: snap.dataText,
     bytes: snap.bytes,
     checks: {
       attestation_verified_over_raw_bytes: true,

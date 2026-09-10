@@ -262,6 +262,15 @@ describe("сборка снимка проверяется настоящей, �
       expect(out.snapshot, how).toBeDefined();
       expect(out.priced[0].symbol, how).toBe("WETH");
       expect(Number(out.priced[0].price_usd), how).toBeGreaterThan(0);
+
+      // 🔴 Единственная подписываемая форма. Ответ ронял `dataText`, то есть подписывать
+      // было нечего. Пересобрать его из `snapshot` нельзя: другой сериализатор даст
+      // другой порядок ключей и другие пробелы, подпись ляжет на другие байты и не
+      // сойдётся. Поэтому проверяем не «поле есть», а что оно НЕСЁТ ТОТ ЖЕ снимок и что
+      // его длина совпадает с объявленной.
+      expect(typeof out.dataText, `${how}: dataText потерян — подписывать нечего`).toBe("string");
+      expect(JSON.parse(out.dataText), how).toEqual(out.snapshot);
+      expect(new TextEncoder().encode(out.dataText).length, how).toBe(out.bytes);
     }
   });
 
@@ -329,5 +338,25 @@ describe("срезка выдачи по тикеру видна вызываю�
   it("по адресу насыщения быть не может: адрес опознаёт один токен", async () => {
     const out = read(await handleGetVerifiedPrice({ token_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" }, depsFor(100)));
     expect(out.truncated).toBe(false);
+  });
+});
+
+// Недоступность цепи не повод покупать заново.
+//
+// 🔴 Растяжка на исходник, и я говорю это прямо: логика повтора живёт в скрипте, который
+// исполняется при импорте, поэтому поведенчески её отсюда не завести. Проверка держит то
+// единственное, что имеет цену, — что `chain_unreachable` НЕ в множестве повторяемых.
+// К моменту этого отказа платный ответ уже куплен и подпись проверена; повтор берёт
+// новые данные Graph, которые не нужны, и перебои RPC съедают весь потолок попыток.
+describe("повтор не покупает заново то, что уже куплено", () => {
+  it("chain_unreachable выведен из повторяемых причин", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../scripts/retry-until-clean.mjs", import.meta.url), "utf8");
+    const transient = /const TRANSIENT = new Set\((\[[^\]]*\])\)/.exec(src);
+    expect(transient, "множество повторяемых причин не найдено — скрипт переписали").toBeTruthy();
+    const causes: string[] = JSON.parse(transient![1].replace(/'/g, '"'));
+    expect(causes).not.toContain("chain_unreachable");
+    // И остаётся повторяемым то, что действительно потеряно в доставке.
+    expect(causes).toContain("paid_request_failed");
   });
 });
