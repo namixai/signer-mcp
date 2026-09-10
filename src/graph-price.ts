@@ -14,7 +14,7 @@
 // 🔴 WHERE THIS RUNS: outside the enclave, like everything else that touches a
 // network. It reads and decides; it signs nothing a venue would execute.
 
-import { paidQuery } from "./graph/fetch.js";
+import { paidQuery, priceQueryByAddress, priceQueryBySymbol, RECENT_PRICED_QUERY } from "./graph/fetch.js";
 import { verifyAttestation, parseAttestationHeader } from "./graph/attestation.js";
 import { chainHead, resolveIndexer, arbitrumClient } from "./graph/chain.js";
 import { checkUsable } from "./graph/usability.js";
@@ -46,7 +46,10 @@ const REAL_DEPS: PriceDeps = {
 };
 
 export interface VerifiedPriceInput {
-  symbol: string;
+  /** Contract address. The only way to name a token without ambiguity. */
+  token_address?: string;
+  /** Ticker. Accepted, but it can match several tokens — see the note in the answer. */
+  symbol?: string;
   subgraph_id?: string;
   band_bps?: number;
 }
@@ -96,15 +99,30 @@ export async function handleGetVerifiedPrice(
   // прогон 10.09 угадал неверно и вернул `token_not_found`, потратив цент и не сказав,
   // что в ответе БЫЛО. Без символа проверяются все пятеро, и цент всегда приносит данные.
   const symbol = typeof args?.symbol === "string" && args.symbol !== "" ? args.symbol : null;
+  const address = typeof args?.token_address === "string" && args.token_address !== "" ? args.token_address : null;
+
+  // 🔴 ADDRESS FIRST, and the ticker only when there is nothing better. Asking this
+  // subgraph for "WETH" returned five different tokens all called WETH, all priced zero,
+  // and the real Wrapped Ether was not among them — measured on a paid query, 2026-09-10.
+  // Anyone can deploy a token and name it anything, so a ticker names a token about as
+  // precisely as a first name names a person.
+  let query: string;
+  try {
+    query = address
+      ? priceQueryByAddress(address)
+      : symbol
+        ? priceQueryBySymbol(symbol)
+        : RECENT_PRICED_QUERY;
+  } catch (err: any) {
+    return refuse("query", "bad_request", String(err?.message ?? err));
+  }
   const timings: Record<string, number> = {};
 
   // 1. The paid read. paidQuery refuses `no_payer_key` by name when X402_PRIVATE_KEY
   //    is unset — deliberately NOT re-implemented here. This tool never invents a
   //    payer: if the operator has not set a key, nothing is spent and nothing is faked.
   let t = ms();
-  const q: any = await deps.paidQuery(
-    args.subgraph_id ? { subgraphId: args.subgraph_id } : {},
-  );
+  const q: any = await deps.paidQuery({ query, ...(args.subgraph_id ? { subgraphId: args.subgraph_id } : {}) });
   timings.query_ms = ms() - t;
   if (!q?.ok) return refuse("query", String(q?.reason ?? "query_failed"), q?.detail);
 
@@ -154,7 +172,8 @@ export async function handleGetVerifiedPrice(
     ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)
     : [];
 
-  const wanted = symbol ? [symbol] : available;
+  // По адресу вернётся ровно один токен — проверяем его, каким бы ни был его тикер.
+  const wanted = address ? available : symbol ? [symbol] : available;
   const checked = wanted.map((sym) => ({ symbol: sym, result: deps.checkUsable(parsed, sym, head) as any }));
   timings.usability_ms = ms() - t;
 

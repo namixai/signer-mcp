@@ -34,6 +34,65 @@ export const PRICE_QUERY = `{
 }`;
 
 /**
+ * Ask for ONE token by its contract address.
+ *
+ * 🔴 A SYMBOL IS NOT A KEY, and we paid to learn it. Asking this subgraph for "WETH"
+ * returned five different token entities all calling themselves WETH, every one of them
+ * priced zero — the real Wrapped Ether was not among them. Anyone can deploy a token and
+ * name it whatever they like, so the ticker identifies a token the way a first name
+ * identifies a person. The address does not have that problem.
+ *
+ * The subgraph keys tokens by the lowercased address, so that is what goes in.
+ */
+export function priceQueryByAddress(address) {
+  const id = String(address).toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(id)) throw new Error(`not a contract address: ${address}`);
+  return `{
+  tokens(where: {id: "${id}"}) {
+    id symbol lastPriceUSD lastPriceBlockNumber
+  }
+  _meta { block { number timestamp } hasIndexingErrors }
+}`;
+}
+
+/**
+ * Ask by ticker, knowing the answer may be several tokens.
+ *
+ * Kept because a caller may only have a ticker, but it returns everything that matches
+ * so the ambiguity is visible rather than resolved by luck — taking the first row would
+ * pick a namesake as often as the token meant.
+ */
+export function priceQueryBySymbol(symbol) {
+  const sym = String(symbol);
+  if (!/^[A-Za-z0-9._-]{1,32}$/.test(sym)) throw new Error(`not a plausible symbol: ${symbol}`);
+  return `{
+  tokens(where: {symbol: "${sym}"}, first: 20) {
+    id symbol lastPriceUSD lastPriceBlockNumber
+  }
+  _meta { block { number timestamp } hasIndexingErrors }
+}`;
+}
+
+/**
+ * The most recently priced tokens that actually carry a price.
+ *
+ * 🔴 The filter is the whole point. Ordering by `lastPriceBlockNumber` alone returns
+ * whatever was touched last, and measured on 2026-09-10 that was five zero-priced tokens
+ * twice in a row; widening to twenty gave five priced out of twenty. Three quarters of
+ * what a cent buys, unusable. With the filter, five of five came back priced.
+ *
+ * PRICE_QUERY above is deliberately NOT changed: `LEVERAGE-EVIDENCE.md` rests on the
+ * requestCID computed over its exact bytes, and a query nobody can reproduce is not
+ * evidence any more.
+ */
+export const RECENT_PRICED_QUERY = `{
+  tokens(where: {lastPriceUSD_gt: 0}, first: 5, orderBy: lastPriceBlockNumber, orderDirection: desc) {
+    id symbol lastPriceUSD lastPriceBlockNumber
+  }
+  _meta { block { number timestamp } hasIndexingErrors }
+}`;
+
+/**
  * Decode the gateway's 402 challenge. Free — no payment is made to read it, which
  * makes it a cheap way to confirm price, network and asset before spending anything.
  */

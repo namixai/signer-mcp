@@ -144,3 +144,47 @@ describe("цент обязан принести данные, а не тупи�
     }
   });
 });
+
+// Адрес важнее тикера, и это куплено платным запросом, а не выведено.
+describe("токен называется адресом, тикер — только когда адреса нет", () => {
+  const capture = () => {
+    const seen: { query?: string } = {};
+    const deps = {
+      ...passingBase(),
+      paidQuery: async (o: any) => {
+        seen.query = o?.query;
+        return { ok: true, status: 200, attestationHeader: "hdr", rawBody: '{"data":{"tokens":[{"symbol":"X"}]}}' };
+      },
+    } as unknown as PriceDeps;
+    return { seen, deps };
+  };
+
+  it("по адресу спрашивается id, а не тикер", async () => {
+    const { seen, deps } = capture();
+    await handleGetVerifiedPrice({ token_address: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2" } as any, deps);
+    expect(seen.query).toMatch(/id: "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"/);
+    expect(seen.query).not.toMatch(/symbol:/);
+  });
+
+  it("по тикеру спрашиваются ВСЕ однофамильцы", async () => {
+    const { seen, deps } = capture();
+    await handleGetVerifiedPrice({ symbol: "WETH" } as any, deps);
+    expect(seen.query).toMatch(/symbol: "WETH"/);
+    expect(seen.query).toMatch(/first: 20/);
+  });
+
+  it("без того и другого — только токены, у которых цена есть", async () => {
+    const { seen, deps } = capture();
+    await handleGetVerifiedPrice({} as any, deps);
+    expect(seen.query).toMatch(/lastPriceUSD_gt: 0/);
+  });
+
+  it("мусор вместо адреса отвергается до платежа", async () => {
+    let paid = false;
+    const deps = { ...passingBase(), paidQuery: async () => { paid = true; return { ok: true }; } } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ token_address: "WETH" } as any, deps));
+    expect(out.ok).toBe(false);
+    expect(out.cause).toBe("bad_request");
+    expect(paid, "🔴 заплатили за заведомо негодный запрос").toBe(false);
+  });
+});

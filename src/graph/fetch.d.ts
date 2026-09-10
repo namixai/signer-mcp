@@ -13,3 +13,7 @@ export function paidQuery(opts?: {
 }): Promise<PaidQueryResult>;
 export function quote(opts?: Record<string, unknown>): Promise<Record<string, unknown>>;
 export function decodeChallenge(value: unknown): Record<string, unknown>;
+export function priceQueryByAddress(address: string): string;
+export function priceQueryBySymbol(symbol: string): string;
+export const RECENT_PRICED_QUERY: string;
+export const PRICE_QUERY: string;
