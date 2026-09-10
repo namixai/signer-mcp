@@ -67,13 +67,19 @@ readSync(tty, buf, 0, 8, null);
 closeSync(tty);
 
 const t0 = Date.now();
-const res = await handleGetVerifiedPrice({ symbol: process.env.SYMBOL ?? 'WETH' });
+// Без символа: запрос возвращает пятёрку с самой свежей ценой, и какие это токены —
+// заранее не знает никто. Первый платный прогон спросил WETH, не угадал и потратил цент
+// впустую. Спрашиваем всё, что пришло; SYMBOL можно задать, если нужен конкретный.
+const res = await handleGetVerifiedPrice(process.env.SYMBOL ? { symbol: process.env.SYMBOL } : {});
 const total = Date.now() - t0;
 const out = JSON.parse(res.content[0].text);
 
 console.log('\n' + JSON.stringify(out, null, 2));
 console.log(`\n  ВЕСЬ ПРОХОД   ${total} мс`);
 if (out.ok) {
+  console.log('  доступно было   :', (out.available ?? []).join(', '));
+  console.log('  прошло проверку :', (out.priced ?? []).map((x) => `${x.symbol} ${x.price_usd}`).join(' | '));
+  if (out.refused?.length) console.log('  отвергнуто      :', out.refused.map((x) => `${x.symbol}: ${x.reason}`).join(' | '));
   console.log('  четыре проверки:');
   console.log('    подпись по точным байтам :', out.checks.attestation_verified_over_raw_bytes);
   console.log('    индексатор ончейн        :', out.checks.indexer_resolved_on_chain);

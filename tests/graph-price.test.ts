@@ -15,7 +15,7 @@ import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 const read = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0].text);
 
 // Заглушки, при которых проход доходит до конца. Каждый тест ломает РОВНО ОДНУ.
-const passing = (): PriceDeps =>
+const passingBase = (): PriceDeps =>
   ({
     paidQuery: async () => ({ ok: true, status: 200, rawBody: '{"data":{}}', attestationHeader: "hdr", subgraphId: "sub" }),
     parseAttestationHeader: () => ({ parsed: true }),
@@ -29,7 +29,7 @@ const passing = (): PriceDeps =>
 
 describe("каждая из четырёх проверок останавливает ответ и называет себя", () => {
   it("подпись индексера не сошлась — цены нет", async () => {
-    const deps = { ...passing(), verifyAttestation: async () => ({ ok: false, reason: "response_cid_mismatch" }) } as unknown as PriceDeps;
+    const deps = { ...passingBase(), verifyAttestation: async () => ({ ok: false, reason: "response_cid_mismatch" }) } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.ok).toBe(false);
     expect(out.stage).toBe("attestation");
@@ -38,7 +38,7 @@ describe("каждая из четырёх проверок останавлив
   });
 
   it("подписант не резолвится в индексатора с залогом — цены нет", async () => {
-    const deps = { ...passing(), resolveIndexer: async () => ({ ok: false, reason: "allocation_not_found" }) } as unknown as PriceDeps;
+    const deps = { ...passingBase(), resolveIndexer: async () => ({ ok: false, reason: "allocation_not_found" }) } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.ok).toBe(false);
     expect(out.stage).toBe("indexer");
@@ -50,7 +50,7 @@ describe("каждая из четырёх проверок останавлив
     ["graphql_errors", "запрос отвергнут — чинить запрос"],
     ["price_stale", "рынок мёртв — не торговать"],
   ])("годность данных: %s доезжает до агента отдельным именем", async (reason) => {
-    const deps = { ...passing(), checkUsable: () => ({ ok: false, reason }) } as unknown as PriceDeps;
+    const deps = { ...passingBase(), checkUsable: () => ({ ok: false, reason }) } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.ok).toBe(false);
     expect(out.stage).toBe("usability");
@@ -58,7 +58,7 @@ describe("каждая из четырёх проверок останавлив
   });
 
   it("возраст цены измеряется отдельно от возраста головы и доезжает в ответе", async () => {
-    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, passing()));
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, passingBase()));
     expect(out.ok).toBe(true);
     // Два числа, не одно: голова может быть свежей при цене годовой давности.
     expect(out.checks.price_age_measured_separately).toEqual({ source_lag_blocks: "1", price_lag_blocks: "10" });
@@ -67,14 +67,14 @@ describe("каждая из четырёх проверок останавлив
 
 describe("отказы платёжного пути не выдаются за отказ проверки", () => {
   it("без ключа плательщика ничего не тратится и отказ назван", async () => {
-    const deps = { ...passing(), paidQuery: async () => ({ ok: false, reason: "no_payer_key", detail: "set X402_PRIVATE_KEY to spend" }) } as unknown as PriceDeps;
+    const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, reason: "no_payer_key", detail: "set X402_PRIVATE_KEY to spend" }) } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.cause).toBe("no_payer_key");
     expect(out.stage).toBe("query");
   });
 
   it("сеть недоступна — это не «цена не прошла проверку»", async () => {
-    const deps = { ...passing(), chainHead: async () => { throw new Error("connect ECONNREFUSED"); } } as unknown as PriceDeps;
+    const deps = { ...passingBase(), chainHead: async () => { throw new Error("connect ECONNREFUSED"); } } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.stage).toBe("chain_head");
     expect(out.cause).toBe("chain_unreachable");
@@ -83,13 +83,62 @@ describe("отказы платёжного пути не выдаются за 
 
 describe("успешный ответ несёт доказательства, а не только число", () => {
   it("все четыре проверки отражены в ответе", async () => {
-    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, passing()));
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, passingBase()));
     expect(out.ok).toBe(true);
     expect(out.checks.attestation_verified_over_raw_bytes).toBe(true);
     expect(out.checks.indexer_resolved_on_chain).toBe("0xindexer");
     expect(out.checks.reading_usable).toBe(true);
     expect(out.snapshot).toBeDefined();
     // Замер каждого этапа — чтобы «стало медленно» можно было показать, а не почувствовать.
+    for (const k of ["query_ms", "attestation_ms", "chain_head_ms", "indexer_ms", "usability_ms"]) {
+      expect(typeof out.timings_ms[k]).toBe("number");
+    }
+  });
+});
+
+// Найдено первым живым платным прогоном 10.09, а не рассуждением.
+//
+// Запрос возвращает `tokens(first: 5, orderBy: lastPriceBlockNumber)` — пятёрку, у которой
+// цена обновилась последней. Набор меняется от блока к блоку, назвать символ заранее нельзя.
+// Прогон спросил WETH, получил `token_not_found`, потратил цент и НЕ сказал, что в ответе
+// было. Данные пришли проверенные, воспользоваться ими было нечем.
+describe("цент обязан принести данные, а не тупик", () => {
+  const withTokens = (syms: string[]) =>
+    ({
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: true, status: 200, attestationHeader: "hdr", subgraphId: "sub",
+        rawBody: JSON.stringify({ data: { tokens: syms.map((s) => ({ symbol: s })) } }),
+      }),
+    }) as unknown as PriceDeps;
+
+  it("без символа проверяются ВСЕ пришедшие токены", async () => {
+    const deps = { ...withTokens(["LYX", "AAVE", "TREAT"]) } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({} as any, deps));
+    expect(out.ok).toBe(true);
+    expect(out.available).toEqual(["LYX", "AAVE", "TREAT"]);
+    expect(out.priced.map((p: any) => p.symbol)).toEqual(["LYX", "AAVE", "TREAT"]);
+  });
+
+  it("отказ по символу называет, что БЫЛО в ответе", async () => {
+    const deps = {
+      ...withTokens(["LYX", "AAVE"]),
+      checkUsable: () => ({ ok: false, reason: "token_not_found" }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok).toBe(false);
+    expect(out.cause).toBe("token_not_found");
+    expect(out.detail.available).toEqual(["LYX", "AAVE"]);
+    expect(out.detail.asked).toBe("WETH");
+  });
+
+  it("отказ после платного запроса несёт замер — за него уже заплачено", async () => {
+    const deps = {
+      ...withTokens(["LYX"]),
+      checkUsable: () => ({ ok: false, reason: "price_stale" }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "LYX" }, deps));
+    expect(out.ok).toBe(false);
     for (const k of ["query_ms", "attestation_ms", "chain_head_ms", "indexer_ms", "usability_ms"]) {
       expect(typeof out.timings_ms[k]).toBe("number");
     }

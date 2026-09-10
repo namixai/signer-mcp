@@ -65,13 +65,21 @@ const ms = () => Date.now();
  * retry or fix it) from `price_stale` (the market is dead — do not trade on it).
  * Those three are fixed in three different places, and only `cause` distinguishes them.
  */
-function refuse(stage: Stage, cause: string, detail: unknown = null): ToolResult {
+function refuse(
+  stage: Stage,
+  cause: string,
+  detail: unknown = null,
+  timings?: Record<string, number>,
+): ToolResult {
   return toolJson({
     ok: false,
     stage,
     cause,
     detail: detail ?? null,
     checked: false,
+    // 🔴 Отказ после платного запроса обязан нести замер: цент уже потрачен, и
+    // «сколько это заняло» — единственное, что за него ещё можно узнать.
+    ...(timings ? { timings_ms: timings } : {}),
     note:
       "No price is returned. A refusal here is a decision, not an outage — read `cause` " +
       "before retrying, because these are not fixed the same way.",
@@ -82,10 +90,12 @@ export async function handleGetVerifiedPrice(
   args: VerifiedPriceInput,
   deps: PriceDeps = REAL_DEPS,
 ): Promise<ToolResult> {
-  const symbol = args?.symbol;
-  if (typeof symbol !== "string" || symbol === "") {
-    return refuse("query", "bad_request", "symbol is required");
-  }
+  // 🔴 Символ НЕОБЯЗАТЕЛЕН, и это следствие того, что запрос на самом деле возвращает:
+  // пять токенов, у которых цена обновилась последними. Набор меняется от блока к блоку,
+  // так что назвать символ заранее нельзя — можно только угадать. Первый живой платный
+  // прогон 10.09 угадал неверно и вернул `token_not_found`, потратив цент и не сказав,
+  // что в ответе БЫЛО. Без символа проверяются все пятеро, и цент всегда приносит данные.
+  const symbol = typeof args?.symbol === "string" && args.symbol !== "" ? args.symbol : null;
   const timings: Record<string, number> = {};
 
   // 1. The paid read. paidQuery refuses `no_payer_key` by name when X402_PRIVATE_KEY
@@ -140,11 +150,27 @@ export async function handleGetVerifiedPrice(
   } catch (err: any) {
     return refuse("usability", "body_not_json", String(err?.message ?? err));
   }
-  const usability: any = deps.checkUsable(parsed, symbol, head);
+  const available: string[] = Array.isArray((parsed as any)?.data?.tokens)
+    ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)
+    : [];
+
+  const wanted = symbol ? [symbol] : available;
+  const checked = wanted.map((sym) => ({ symbol: sym, result: deps.checkUsable(parsed, sym, head) as any }));
   timings.usability_ms = ms() - t;
-  if (!usability?.ok) {
-    return refuse("usability", String(usability?.reason ?? "not_usable"), usability?.detail);
+
+  const good = checked.filter((c) => c.result?.ok === true);
+  if (good.length === 0) {
+    const first = checked[0]?.result;
+    return refuse(
+      "usability",
+      String(first?.reason ?? "not_usable"),
+      // 🔴 Что БЫЛО в ответе — часть отказа, а не догадка вызывающего. Иначе цент куплен
+      // впустую: данные пришли и проверены, а воспользоваться ими нельзя.
+      { asked: symbol ?? "(все пришедшие)", available, per_symbol: checked.map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })) },
+      timings,
+    );
   }
+  const usability: any = good[0].result;
 
   // 6. The answer, which states what was NOT checked as plainly as what was.
   const observedAtMs = ms();
@@ -177,5 +203,8 @@ export async function handleGetVerifiedPrice(
       },
     },
     timings_ms: timings,
+    available,
+    priced: good.map((c) => ({ symbol: c.symbol, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
+    refused: checked.filter((c) => c.result?.ok !== true).map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })),
   });
 }
