@@ -14,7 +14,10 @@
 // 🔴 WHERE THIS RUNS: outside the enclave, like everything else that touches a
 // network. It reads and decides; it signs nothing a venue would execute.
 
-import { paidQuery } from "./graph/fetch.js";
+import {
+  paidQuery, priceQueryByAddress, priceQueryBySymbol,
+  RECENT_PRICED_QUERY, UNISWAP_V3_ETHEREUM, SYMBOL_MATCH_LIMIT,
+} from "./graph/fetch.js";
 import { verifyAttestation, parseAttestationHeader } from "./graph/attestation.js";
 import { chainHead, resolveIndexer, arbitrumClient } from "./graph/chain.js";
 import { checkUsable } from "./graph/usability.js";
@@ -46,7 +49,10 @@ const REAL_DEPS: PriceDeps = {
 };
 
 export interface VerifiedPriceInput {
-  symbol: string;
+  /** Contract address. The only way to name a token without ambiguity. */
+  token_address?: string;
+  /** Ticker. Accepted, but it can match several tokens — see the note in the answer. */
+  symbol?: string;
   subgraph_id?: string;
   band_bps?: number;
 }
@@ -65,13 +71,21 @@ const ms = () => Date.now();
  * retry or fix it) from `price_stale` (the market is dead — do not trade on it).
  * Those three are fixed in three different places, and only `cause` distinguishes them.
  */
-function refuse(stage: Stage, cause: string, detail: unknown = null): ToolResult {
+function refuse(
+  stage: Stage,
+  cause: string,
+  detail: unknown = null,
+  timings?: Record<string, number>,
+): ToolResult {
   return toolJson({
     ok: false,
     stage,
     cause,
     detail: detail ?? null,
     checked: false,
+    // 🔴 Отказ после платного запроса обязан нести замер: цент уже потрачен, и
+    // «сколько это заняло» — единственное, что за него ещё можно узнать.
+    ...(timings ? { timings_ms: timings } : {}),
     note:
       "No price is returned. A refusal here is a decision, not an outage — read `cause` " +
       "before retrying, because these are not fixed the same way.",
@@ -82,9 +96,28 @@ export async function handleGetVerifiedPrice(
   args: VerifiedPriceInput,
   deps: PriceDeps = REAL_DEPS,
 ): Promise<ToolResult> {
-  const symbol = args?.symbol;
-  if (typeof symbol !== "string" || symbol === "") {
-    return refuse("query", "bad_request", "symbol is required");
+  // 🔴 Символ НЕОБЯЗАТЕЛЕН, и это следствие того, что запрос на самом деле возвращает:
+  // пять токенов, у которых цена обновилась последними. Набор меняется от блока к блоку,
+  // так что назвать символ заранее нельзя — можно только угадать. Первый живой платный
+  // прогон 10.09 угадал неверно и вернул `token_not_found`, потратив цент и не сказав,
+  // что в ответе БЫЛО. Без символа проверяются все пятеро, и цент всегда приносит данные.
+  const symbol = typeof args?.symbol === "string" && args.symbol !== "" ? args.symbol : null;
+  const address = typeof args?.token_address === "string" && args.token_address !== "" ? args.token_address : null;
+
+  // 🔴 ADDRESS FIRST, and the ticker only when there is nothing better. Asking this
+  // subgraph for "WETH" returned five different tokens all called WETH, all priced zero,
+  // and the real Wrapped Ether was not among them — measured on a paid query, 2026-09-10.
+  // Anyone can deploy a token and name it anything, so a ticker names a token about as
+  // precisely as a first name names a person.
+  let query: string;
+  try {
+    query = address
+      ? priceQueryByAddress(address)
+      : symbol
+        ? priceQueryBySymbol(symbol)
+        : RECENT_PRICED_QUERY;
+  } catch (err: any) {
+    return refuse("query", "bad_request", String(err?.message ?? err));
   }
   const timings: Record<string, number> = {};
 
@@ -92,9 +125,7 @@ export async function handleGetVerifiedPrice(
   //    is unset — deliberately NOT re-implemented here. This tool never invents a
   //    payer: if the operator has not set a key, nothing is spent and nothing is faked.
   let t = ms();
-  const q: any = await deps.paidQuery(
-    args.subgraph_id ? { subgraphId: args.subgraph_id } : {},
-  );
+  const q: any = await deps.paidQuery({ query, ...(args.subgraph_id ? { subgraphId: args.subgraph_id } : {}) });
   timings.query_ms = ms() - t;
   if (!q?.ok) return refuse("query", String(q?.reason ?? "query_failed"), q?.detail);
 
@@ -140,23 +171,68 @@ export async function handleGetVerifiedPrice(
   } catch (err: any) {
     return refuse("usability", "body_not_json", String(err?.message ?? err));
   }
-  const usability: any = deps.checkUsable(parsed, symbol, head);
+  // 🔴 Насыщение выдачи вызывающий обязан УВИДЕТЬ. Ровно `SYMBOL_MATCH_LIMIT` строк
+  // означает не «это все», а «столько поместилось, и есть ли ещё — отсюда не видно».
+  // Раньше срезка была молчаливой, и «настоящего среди них нет» могло на самом деле
+  // значить «настоящий не попал в выдачу» — то есть находка про неуникальность тикера
+  // выглядела бы сильнее, чем данные её держат.
+  const rows: unknown[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
+  const saturated = symbol !== null && address === null && rows.length === SYMBOL_MATCH_LIMIT;
+
+  const available: string[] = Array.isArray((parsed as any)?.data?.tokens)
+    ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)
+    : [];
+
+  // По адресу вернётся ровно один токен — проверяем его, каким бы ни был его тикер.
+  const wanted = address ? available : symbol ? [symbol] : available;
+  const checked = wanted.map((sym) => ({ symbol: sym, result: deps.checkUsable(parsed, sym, head) as any }));
   timings.usability_ms = ms() - t;
-  if (!usability?.ok) {
-    return refuse("usability", String(usability?.reason ?? "not_usable"), usability?.detail);
+
+  const good = checked.filter((c) => c.result?.ok === true);
+  if (good.length === 0) {
+    const first = checked[0]?.result;
+    return refuse(
+      "usability",
+      String(first?.reason ?? "not_usable"),
+      // 🔴 Что БЫЛО в ответе — часть отказа, а не догадка вызывающего. Иначе цент куплен
+      // впустую: данные пришли и проверены, а воспользоваться ими нельзя.
+      { asked: symbol ?? "(все пришедшие)", available, truncated: saturated, per_symbol: checked.map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })) },
+      timings,
+    );
   }
+  const usability: any = good[0].result;
 
   // 6. The answer, which states what was NOT checked as plainly as what was.
   const observedAtMs = ms();
+  // Отметка времени блока приходит в самом ответе, в секундах.
+  const rawTs = (parsed as any)?.data?._meta?.block?.timestamp;
+  const blockTsMs = Number.isFinite(Number(rawTs)) ? Number(rawTs) * 1000 : NaN;
+  if (!Number.isFinite(blockTsMs)) {
+    return refuse("snapshot", "missing_block_timestamp", { got: rawTs ?? null }, timings);
+  }
   const snap: any = deps.buildSnapshot({
-    subgraphId: q.subgraphId ?? args.subgraph_id,
-    symbol,
+    // 🔴 `paidQuery` НЕ возвращает subgraph id — я решил, что возвращает, и снимок
+    // отказывался собираться с `bad_request: subgraphId missing`. Нашлось платным
+    // прогоном 10.09: прежние падали на годности и до сборки не доходили. Берём тот же
+    // умолчательный идентификатор, которым запрос и уходил.
+    subgraphId: args.subgraph_id ?? UNISWAP_V3_ETHEREUM,
+    // 🔴 Тикер НАЙДЕННОГО токена, а не спрошенного. При поиске по адресу спрошенного
+    // тикера нет вовсе, и снимок отказывался собираться с `bad_request: symbol missing` —
+    // второй платный прогон, второй раз одна и та же дыра: путь, которого не касался ни
+    // один тест. Заодно так правильнее по смыслу: снимок описывает то, что вернулось.
+    symbol: good[0].symbol ?? usability.symbol ?? symbol,
     verification,
     usability,
     indexer,
     chainHead: head,
     observedAtMs,
-    blockTimestampMs: observedAtMs,
+    // 🔴 ВРЕМЯ БЛОКА, А НЕ ВРЕМЯ НАБЛЮДЕНИЯ. Раньше здесь стояло `observedAtMs`, и это
+    // не «неточность»: у снимка есть проверка `observed_before_block`, ловящая запись,
+    // которая claims быть старше блока, который описывает. Подставляя одно и то же
+    // значение с обеих сторон, я делал её тождественно истинной — проверка стояла и не
+    // могла сработать никогда. Найдено чтением контракта buildSnapshot, а не платным
+    // прогоном; предыдущие два таких же нашлись за цент каждый.
+    blockTimestampMs: blockTsMs,
     ...(typeof args.band_bps === "number" ? { bandBps: args.band_bps } : {}),
   });
   if (!snap?.ok) {
@@ -177,5 +253,9 @@ export async function handleGetVerifiedPrice(
       },
     },
     timings_ms: timings,
+    available,
+    truncated: saturated,
+    priced: good.map((c) => ({ symbol: c.symbol, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
+    refused: checked.filter((c) => c.result?.ok !== true).map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })),
   });
 }

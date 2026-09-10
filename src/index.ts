@@ -97,7 +97,10 @@ const DESC_GET_VERIFIED_PRICE =
   "reason (`cause`): `price_absent_or_zero`, `graphql_errors` and `price_stale` " +
   "are three different problems with three different fixes. Costs one cent in " +
   "USDC on Base per query and needs X402_PRIVATE_KEY set; without that key it " +
-  "refuses `no_payer_key` and spends nothing. Runs OUTSIDE the enclave.";
+  "refuses `no_payer_key` and spends nothing. Name the token by `token_address` when " +
+  "you can: a ticker is not a key, and this subgraph holds several tokens called WETH. " +
+  "With neither address nor ticker it returns the most recently priced tokens, filtered " +
+  "to those that actually carry a price. Runs OUTSIDE the enclave.";
 
 const DESC_LIST_VENUES =
   "List the venues this Signer can sign trades for. Returns the venue id, " +
@@ -216,7 +219,21 @@ server.registerTool(
   {
     description: DESC_GET_VERIFIED_PRICE,
     inputSchema: {
-      symbol: z.string().describe("Token symbol as the subgraph spells it, e.g. \"WETH\"."),
+      token_address: z
+        .string()
+        .optional()
+        .describe(
+          "Contract address of the token, e.g. \"0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2\" " +
+            "for Wrapped Ether. PREFER THIS: a ticker can match several tokens.",
+        ),
+      symbol: z
+        .string()
+        .optional()
+        .describe(
+          "Ticker, when no address is at hand. Ambiguous by nature — asking this subgraph " +
+            "for \"WETH\" returns several tokens of that name, so every match is checked " +
+            "and returned rather than the first one being guessed at.",
+        ),
       subgraph_id: z.string().optional().describe("Subgraph deployment id. Defaults to Uniswap V3 on Ethereum."),
       band_bps: z.number().optional().describe("Half-width of the acceptable price band, in basis points."),
     },
