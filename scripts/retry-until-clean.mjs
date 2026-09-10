@@ -52,7 +52,18 @@ console.log(`
 if (Number(formatUnits(before, 6)) < MAX_ATTEMPTS * 0.01) { console.error('Баланса не хватает на потолок. Ничего не списано.'); process.exit(2); }
 
 process.stderr.write('Запустить? Enter — да, Ctrl-C — нет: ');
-const tty = openSync('/dev/tty', 'r'); readSync(tty, Buffer.alloc(8), 0, 8, null); closeSync(tty);
+const tty = openSync('/dev/tty', 'r');
+const buf = Buffer.alloc(64);
+const n = readSync(tty, buf, 0, 64, null);
+closeSync(tty);
+// 🔴 Раньше годился ЛЮБОЙ ввод: «no», «стоп» и случайная клавиша одинаково означали
+// «да». Согласие — это пустая строка (просто Enter) или явное y/yes; всё прочее отказ.
+const answer = buf.slice(0, n).toString('utf8').trim().toLowerCase();
+if (answer !== '' && answer !== 'y' && answer !== 'yes') {
+  console.error(`
+Понято как отказ: ${JSON.stringify(answer)}. Ничего не списано.`);
+  process.exit(2);
+}
 
 let out = null;
 for (let i = 1; i <= MAX_ATTEMPTS; i++) {

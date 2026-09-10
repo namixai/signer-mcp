@@ -208,16 +208,38 @@ export async function handleGetVerifiedPrice(
   const shaped: any = shapeSymbolMatches(parsed as object);
   const saturated = symbol !== null && address === null && shaped?.saturated === true;
 
+  const rows: any[] = Array.isArray((parsed as any)?.data?.tokens) ? (parsed as any).data.tokens : [];
   const available: string[] = Array.isArray((parsed as any)?.data?.tokens)
     ? (parsed as any).data.tokens.map((x: any) => x?.symbol).filter(Boolean)
     : [];
 
   // По адресу вернётся ровно один токен — проверяем его, каким бы ни был его тикер.
-  const wanted = address ? available : symbol ? [symbol] : available;
-  const checked = wanted.map((sym) => ({ symbol: sym, result: deps.checkUsable(parsed, sym, head) as any }));
+  // 🔴 КАЖДАЯ СТРОКА ПРОВЕРЯЕТСЯ ОТДЕЛЬНО. Раньше на каждый токен уходил ОДИН И ТОТ ЖЕ
+  // полный ответ и его тикер, а `checkUsable` ищет по тикеру — так что при пяти строках
+  // с именем WETH пять проверок разбирали одну и ту же первую строку и повторяли её
+  // вердикт пятикратно. Ровно там, где неуникальность тикера и есть предмет разговора.
+  const meta = (parsed as any)?.data?._meta;
+  const isolate = (row: any) => ({ data: { tokens: [row], _meta: meta } });
+  const wanted: any[] = address || !symbol ? rows : rows.filter((r: any) => r?.symbol === symbol);
+  const checked = wanted.map((row: any) => ({
+    symbol: row?.symbol,
+    id: row?.id,
+    result: deps.checkUsable(isolate(row), row?.symbol, head) as any,
+  }));
   timings.usability_ms = ms() - t;
 
   const good = checked.filter((c) => c.result?.ok === true);
+  if (checked.length === 0) {
+    // Ни одна строка не подошла под запрошенное. Это ОТДЕЛЬНАЯ причина, а не «непригодно»:
+    // «такого токена в ответе нет» и «токен есть, но цены у него нет» чинятся по-разному —
+    // первое сменой запроса, второе ничем.
+    return refuse(
+      "usability",
+      "token_not_found",
+      { asked: symbol ?? address ?? "(все пришедшие)", available, truncated: saturated },
+      timings,
+    );
+  }
   if (good.length === 0) {
     const first = checked[0]?.result;
     return refuse(
@@ -295,7 +317,7 @@ export async function handleGetVerifiedPrice(
     timings_ms: timings,
     available,
     truncated: saturated,
-    priced: good.map((c) => ({ symbol: c.symbol, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
+    priced: good.map((c) => ({ symbol: c.symbol, token_address: c.id ?? null, price_usd: c.result.priceUSD, price_block: c.result.priceBlock })),
     refused: checked.filter((c) => c.result?.ok !== true).map((c) => ({ symbol: c.symbol, reason: c.result?.reason ?? null })),
   });
 }

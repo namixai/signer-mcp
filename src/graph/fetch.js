@@ -234,6 +234,7 @@ export async function paidQuery({
   gateway = GATEWAY,
   privateKey = process.env.X402_PRIVATE_KEY,
   fetchImpl = fetch,
+  timeoutMs = 60_000,
 } = {}) {
   if (!privateKey) {
     // Refusing beats an unpaid request that 402s and looks like a gateway fault.
@@ -265,7 +266,15 @@ export async function paidQuery({
     schemes: [{ network: PAYMENT_NETWORK, client: new ExactEvmScheme(account) }],
     spendControls: { maxAmountPerPayment: process.env.X402_MAX_PER_PAYMENT ?? MAX_PER_PAYMENT_DEFAULT },
   });
-  const paidFetch = wrapFetchWithPayment(fetchImpl, client);
+  // 🔴 СРОК НАВЕШИВАЕТСЯ НА ВНУТРЕННИЙ ВЫЗОВ, а не передаётся обёртке. Замер 10.09:
+  // `wrapFetchWithPayment` ТЕРЯЕТ `signal` из init — до нижнего fetch он не доходит
+  // вовсе. Ревью предполагало обратное, и передача сигнала обёртке добавила бы срок,
+  // который никуда не ведёт: молчащий шлюз всё равно оставлял бы вызов висеть вечно.
+  // Поэтому оборачиваем сам fetchImpl и ставим сигнал на каждый его вызов, включая
+  // повтор с оплатой.
+  const deadline = AbortSignal.timeout(timeoutMs);
+  const timedFetch = (url, init) => fetchImpl(url, { ...init, signal: deadline });
+  const paidFetch = wrapFetchWithPayment(timedFetch, client);
 
   let res;
   let rawBody;

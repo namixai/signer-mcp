@@ -10,6 +10,7 @@
 // только «не годится», выберет неправильную.
 
 import { describe, it, expect } from "vitest";
+import { fileURLToPath } from "node:url";
 import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 
 
@@ -21,7 +22,7 @@ import { handleGetVerifiedPrice, type PriceDeps } from "../src/graph-price.js";
 // /tmp на моём ноутбуке: локально зелено, в CI — ENOENT. Тест, который проходит только
 // у автора, ничего не проверяет. Это запись настоящего ответа шлюза, и она едет вместе
 // с кодом; сторож дрейфа сверяет её с истоком так же, как перенесённые модули.
-const FIXTURE = new URL("./fixtures/sample1.body.json", import.meta.url).pathname;
+const FIXTURE = fileURLToPath(new URL("./fixtures/sample1.body.json", import.meta.url));
 
 const BODY = (tokens: unknown[]) =>
   JSON.stringify({
@@ -33,7 +34,7 @@ const read = (r: { content: Array<{ text: string }> }) => JSON.parse(r.content[0
 // Заглушки, при которых проход доходит до конца. Каждый тест ломает РОВНО ОДНУ.
 const passingBase = (): PriceDeps =>
   ({
-    paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([]), attestationHeader: "hdr", subgraphId: "sub" }),
+    paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([{ symbol: "WETH", id: "0xabc", lastPriceUSD: "1", lastPriceBlockNumber: "9" }]), attestationHeader: "hdr", subgraphId: "sub" }),
     parseAttestationHeader: () => ({ parsed: true }),
     verifyAttestation: async () => ({ ok: true, allocationId: "0xalloc", subgraphDeploymentID: "0xdep" }),
     chainHead: async () => 1000n,
@@ -368,7 +369,7 @@ describe("платный путь не роняет инструмент и не
     const A = await import("../src/graph/attestation.js");
     return {
       ...passingBase(),
-      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([{ symbol: "X" }]), attestationHeader: hdr }),
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY([{ symbol: "WETH" }]), attestationHeader: hdr }),
       parseAttestationHeader: A.parseAttestationHeader,
     } as unknown as PriceDeps;
   };
@@ -378,7 +379,7 @@ describe("платный путь не роняет инструмент и не
       [null, "attestation_header_missing"],
       ["не json", "attestation_header_unreadable"],
     ] as const) {
-      const out = read(await handleGetVerifiedPrice({ symbol: "X" }, await withHeader(hdr)));
+      const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, await withHeader(hdr)));
       expect(out.ok).toBe(false);
       expect(out.cause).toBe(cause);
     }
@@ -388,25 +389,25 @@ describe("платный путь не роняет инструмент и не
     let paid = false;
     const deps = { ...passingBase(), paidQuery: async () => { paid = true; return { ok: true }; } } as unknown as PriceDeps;
     for (const bad of [12.5, -1, 10_001, NaN, "5"]) {
-      const out = read(await handleGetVerifiedPrice({ symbol: "X", band_bps: bad } as any, deps));
+      const out = read(await handleGetVerifiedPrice({ symbol: "WETH", band_bps: bad } as any, deps));
       expect(out.ok, `принята полоса ${String(bad)}`).toBe(false);
       expect(out.cause).toBe("bad_request");
     }
     expect(paid, "🔴 заплатили за запрос, который всё равно бы упал").toBe(false);
     // Целые в диапазоне обязаны проходить, иначе проверка просто запрещает полосу.
-    const good = read(await handleGetVerifiedPrice({ symbol: "X", band_bps: 250 } as any, passingBase()));
+    const good = read(await handleGetVerifiedPrice({ symbol: "WETH", band_bps: 250 } as any, passingBase()));
     expect(good.ok).toBe(true);
   });
 
   it("null во времени блока не проходит: Number(null) это 0, а ноль конечен", async () => {
-    const body = JSON.parse(BODY([{ symbol: "X" }]));
+    const body = JSON.parse(BODY([{ symbol: "WETH" }]));
     for (const bad of [null, "", false, 0, -5]) {
       body.data._meta.block.timestamp = bad;
       const deps = {
         ...passingBase(),
         paidQuery: async () => ({ ok: true, status: 200, rawBody: JSON.stringify(body), attestationHeader: "h" }),
       } as unknown as PriceDeps;
-      const out = read(await handleGetVerifiedPrice({ symbol: "X" }, deps));
+      const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
       expect(out.ok, `прошло время блока ${JSON.stringify(bad)}`).toBe(false);
       expect(out.cause).toBe("missing_block_timestamp");
     }
@@ -414,8 +415,34 @@ describe("платный путь не роняет инструмент и не
 
   it("не-2xx ответ несёт статус, а не пустую причину", async () => {
     const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, status: 503 }) } as unknown as PriceDeps;
-    const out = read(await handleGetVerifiedPrice({ symbol: "X" }, deps));
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
     expect(out.cause).toBe("query_failed");
     expect(out.detail).toEqual({ status: 503 });
+  });
+});
+
+// Однофамильцы проверяются поштучно, а не по имени во всём ответе.
+//
+// Ревью на #19: `checkUsable` ищет по тикеру, поэтому при пяти строках с именем WETH пять
+// вызовов разбирали ОДНУ И ТУ ЖЕ первую строку и повторяли её вердикт пятикратно —
+// ровно там, где неуникальность тикера и есть предмет разговора.
+describe("каждая строка токена проверяется своя", () => {
+  it("одинаковые тикеры дают РАЗНЫЕ вердикты по своим строкам", async () => {
+    const rows = [
+      { symbol: "WETH", id: "0xaaa", lastPriceUSD: "0", lastPriceBlockNumber: "9" },
+      { symbol: "WETH", id: "0xbbb", lastPriceUSD: "2400", lastPriceBlockNumber: "1000" },
+    ];
+    const real = await import("../src/graph/usability.js");
+    const deps = {
+      ...passingBase(),
+      checkUsable: real.checkUsable,
+      paidQuery: async () => ({ ok: true, status: 200, rawBody: BODY(rows), attestationHeader: "h" }),
+    } as unknown as PriceDeps;
+
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok, `оба отвергнуты: ${out.cause} ${JSON.stringify(out.detail)}`).toBe(true);
+    // Нулевая строка отвергнута, ненулевая прошла — значит разбирались РАЗНЫЕ строки.
+    expect(out.priced.map((p: any) => p.token_address)).toEqual(["0xbbb"]);
+    expect(out.refused.map((r: any) => r.reason)).toEqual(["price_absent_or_zero"]);
   });
 });

@@ -4,8 +4,22 @@
 // viem при генерации деклараций и падает с TS2742. Явное объявление и точнее, и держит
 // перенесённые файлы вне программы типов — они остаются побайтовой копией истины.
 export interface PaidQueryResult {
-  ok: boolean; reason?: string; detail?: unknown; status?: number;
-  rawBody?: string; attestationHeader?: string | null; subgraphId?: string;
+  ok: boolean;
+  reason?: string;
+  detail?: unknown;
+  status?: number;
+  rawBody?: string;
+  attestationHeader?: string | null;
+  /** Отсутствие заголовка сообщается, а не подразумевается: образцов у нас два. */
+  hasAttestation?: boolean;
+  /** Адрес, с которого ушли деньги. */
+  payer?: string;
+  /** Бросок после отправки: списание могло пройти, «не потрачено» утверждать нельзя. */
+  spendUnknown?: boolean;
+  // 🔴 `subgraphId` здесь БЫЛО и никогда не возвращалось. Это объявление — единственная
+  // проверка типов для перенесённых модулей, и именно оно позволило написать
+  // `q.subgraphId` в graph-price.ts: снимок отказывался собираться, а нашлось платным
+  // прогоном. Ложное поле в типе дороже отсутствующего.
 }
 export function paidQuery(opts?: {
   subgraphId?: string; query?: string; gateway?: string;

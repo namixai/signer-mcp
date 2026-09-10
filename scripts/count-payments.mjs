@@ -10,7 +10,9 @@
 import { createPublicClient, http, formatUnits, parseAbiItem } from 'viem';
 import { base } from 'viem/chains';
 const c = createPublicClient({ chain: base, transport: http() });
-const me = '0xCf3E005a83Cc77E66e8544e3D6DD0340ea305ba9';
+const me = process.env.PAYER ?? '0xCf3E005a83Cc77E66e8544e3D6DD0340ea305ba9';
+// Получатель x402 шлюза The Graph — берётся из живой заготовки, а не из памяти.
+const PAY_TO = process.env.PAY_TO ?? '0x79DC34E41B2b591078d3dE222C43EcaaBD52FcCB';
 const head = await c.getBlockNumber();
 // RPC Base ограничивает eth_getLogs двумя тысячами блоков — иду окнами, а не одним куском.
 const ev = parseAbiItem('event Transfer(address indexed from, address indexed to, uint256 value)');
@@ -18,10 +20,16 @@ const logs = [];
 for (let i = 0n; i < 6n; i++) {
   const to = head - i * 2000n;
   const from = to - 1999n;
-  logs.push(...await c.getLogs({ address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913', event: ev, args: { from: me }, fromBlock: from, toBlock: to }));
+  // 🔴 И ПОЛУЧАТЕЛЬ, А НЕ ТОЛЬКО ОТПРАВИТЕЛЬ. Раньше сюда попадал ЛЮБОЙ исходящий
+  // перевод USDC: один посторонний платёж в окне — и «потрачено на запросы» завышено,
+  // причём ровно в том отчёте, которым мы отчитываемся за чужие деньги.
+  logs.push(...await c.getLogs({
+    address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    event: ev, args: { from: me, to: PAY_TO }, fromBlock: from, toBlock: to,
+  }));
 }
 logs.sort((a, b) => Number(a.blockNumber - b.blockNumber));
-console.log('платежей с этого адреса:', logs.length);
+console.log(`платежей этому получателю (${PAY_TO}):`, logs.length);
 let sum = 0n;
 for (const l of logs) {
   sum += l.args.value;
