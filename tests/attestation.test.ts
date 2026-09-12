@@ -146,6 +146,48 @@ describe("verifyAttestationBody — the honest document", () => {
   });
 });
 
+describe("CBOR — a legal re-packing is not a defect", () => {
+  it("🔴 accepts a COSE_Sign1 wrapped in tag 18, and verifies it identically", () => {
+    // RFC 8152 permits the tag. Our gateway sends the document untagged, so this branch
+    // was never exercised and, before it existed, a tagged document was refused with
+    // "unsupported major type 6" — calling a valid attestation unreadable and blaming the
+    // producer. Nothing broke because nothing sent one; that is not the same as correct.
+    const body = fixture();
+    const raw = Buffer.from(body.attestation_doc_b64 as string, "base64");
+    mutationApplied(raw[0] === 0x84, "the fixture is not a bare 4-item array to begin with");
+    const tagged = Buffer.concat([Buffer.from([0xd2]), raw]);
+    mutationApplied(tagged[0] === 0xd2, "the tag byte did not get prepended");
+
+    const plain = verifyAttestationBody(body, fixtureNonce);
+    const wrapped = verifyAttestationBody(
+      { ...body, attestation_doc_b64: tagged.toString("base64") },
+      fixtureNonce,
+    );
+    expect(wrapped.unreadable).toBeUndefined();
+    expect(wrapped.checks.document_readable).toBe(true);
+    // Identical verdict, not merely "also readable": same measurement, same signature
+    // result. A tag carries no bytes into the Sig_structure.
+    expect(wrapped.pcr0).toBe(plain.pcr0);
+    expect(wrapped.checks.signature_verified).toBe(plain.checks.signature_verified);
+    expect(wrapped.checks.root_pinned).toBe(plain.checks.root_pinned);
+  });
+
+  it("refuses any OTHER tag by number rather than swallowing it", () => {
+    const body = fixture();
+    const raw = Buffer.from(body.attestation_doc_b64 as string, "base64");
+    // Tag 61 (CWT) is legal CBOR and wrong here. Accepting semantics we do not implement
+    // is how a parser starts agreeing to things.
+    const wrong = Buffer.concat([Buffer.from([0xd8, 0x3d]), raw]);
+    const v = verifyAttestationBody(
+      { ...body, attestation_doc_b64: wrong.toString("base64") },
+      fixtureNonce,
+    );
+    expect(v.verified).toBe(false);
+    expect(v.pcr0).toBeUndefined();
+    expect(typeof v.unreadable).toBe("string");
+  });
+});
+
 describe("verifyAttestationBody — each check can go red", () => {
   it("a nonce we never sent reddens nonce_echoed and says why", () => {
     const other = "00".repeat(16);

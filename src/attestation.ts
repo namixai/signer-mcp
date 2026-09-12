@@ -192,11 +192,29 @@ function decodeAt(b: Buffer, at: number): [CborValue, number] {
       }
       return [out, i];
     }
+    case 6: {
+      // 🔴 A TAG IS NOT A DEFECT. RFC 8152 says a COSE_Sign1 may be wrapped in tag 18,
+      // and `0xd2 0x84 …` is a perfectly legal encoding of exactly the document we read
+      // today as `0x84 …`. Until this branch existed, a tagged document was refused with
+      // "unsupported major type 6" — we would have called a valid attestation unreadable
+      // and blamed the gateway. Our own gateway sends it untagged, which is why nothing
+      // broke and why nobody noticed.
+      //
+      // Only tag 18 is unwrapped, and only at the outermost level as a consequence of
+      // where this is called. Any other tag is refused BY NUMBER rather than swallowed:
+      // an attestation document has no business carrying one, and silently ignoring
+      // semantics we do not understand is how a parser starts agreeing to things.
+      if (val !== 18) throw new Error(`unexpected CBOR tag ${val}`);
+      return decodeAt(b, i);
+    }
     case 7: {
       if (minor === 20) return [false, i];
       if (minor === 21) return [true, i];
       if (minor === 22 || minor === 23) return [null, i];
-      throw new Error(`unsupported simple value ${minor}`);
+      // Floats are major 7 with minor 25/26/27. Refused deliberately: nothing in an
+      // attestation document is a float, and a number that arrives as one is a signal
+      // about the producer, not a value to accept.
+      throw new Error(`unsupported simple or float value (minor ${minor})`);
     }
     default:
       throw new Error(`unsupported major type ${major}`);
