@@ -280,7 +280,32 @@ export async function paidQuery({
   // Поэтому оборачиваем сам fetchImpl и ставим сигнал на каждый его вызов, включая
   // повтор с оплатой.
   const deadline = AbortSignal.timeout(timeoutMs);
-  const timedFetch = (url, init) => fetchImpl(url, { ...init, signal: deadline });
+  // 🔴 «ЗНАЕМ ЛИ МЫ, ЧТО ДЕНЕГ НЕ УШЛО» — вопрос СТРУКТУРНЫЙ, а не текстовый.
+  // Отказ спенд-контроля — единственный случай, про который известно точно: подпись
+  // даже не строилась. Помечать его «иди смотри цепь» значит приучать не смотреть,
+  // потому что при кривом потолке это приходит на КАЖДОМ прогоне, и флаг перестаёт
+  // что-либо значить ровно тогда, когда он нужен.
+  //
+  // Ловить это по тексту ошибки библиотеки нельзя: `All payment requirements were
+  // rejected by spendControls…` — обычный Error без класса и кода, и чужая формулировка
+  // поменяется молча. Поэтому смотрим на факт: УШЁЛ ЛИ ПЛАТЁЖ В ПРОВОД. Обёртка делает
+  // повторный вызов с заголовком X-PAYMENT (для v2 — PAYMENT-SIGNATURE); пока такого
+  // вызова не было, платить было нечем и нечем было потратить.
+  //
+  // Флаг ставится ДО самого запроса намеренно: если бросит на отправке, мы скажем
+  // «не знаю» про платёж, который, возможно, и не ушёл. Ошибаться надо в эту сторону.
+  let paymentReachedTheWire = false;
+  const carriesPayment = (input, init) => {
+    const src = init?.headers ?? (input && typeof input === 'object' ? input.headers : null);
+    if (!src) return false;
+    const read = (k) =>
+      typeof src.get === 'function' ? src.get(k) : (src[k] ?? src[k.toLowerCase()]);
+    return Boolean(read('X-PAYMENT') || read('PAYMENT-SIGNATURE'));
+  };
+  const timedFetch = (input, init) => {
+    if (carriesPayment(input, init)) paymentReachedTheWire = true;
+    return fetchImpl(input, { ...init, signal: deadline });
+  };
   const paidFetch = wrapFetchWithPayment(timedFetch, client);
 
   let res;
@@ -294,14 +319,22 @@ export async function paidQuery({
     // Read as text, never as .json() — the exact bytes are the thing being attested.
     rawBody = await res.text();
   } catch (err) {
-    // 🔴 Ambiguous on purpose in ONE direction only: a throw here may mean the payment
-    // never happened, or that it did and the response was lost. Reported as its own
-    // reason so nobody records it as "no spend" without checking the chain.
+    const detail = String(err?.shortMessage ?? err?.message ?? err);
+    // Ambiguous in ONE direction only, and only when it really is ambiguous: once a
+    // payment header has gone out, a throw may mean the payment landed and the response
+    // was lost, so nobody may record it as "no spend" without checking the chain.
+    // Before that point there is nothing to be unsure about.
+    //
+    // The cap gets its own name as well. `paid_request_failed` on a refusal that never
+    // touched the network sends the reader to a block explorer to look for a payment
+    // that was never built; `payment_over_cap` sends them to X402_MAX_PER_PAYMENT,
+    // which is where the problem actually is.
+    const refusedByCap = !paymentReachedTheWire && /rejected by spendControls/i.test(detail);
     return {
       ok: false,
-      reason: 'paid_request_failed',
-      detail: String(err?.shortMessage ?? err?.message ?? err),
-      spendUnknown: true,
+      reason: refusedByCap ? 'payment_over_cap' : 'paid_request_failed',
+      detail,
+      spendUnknown: paymentReachedTheWire,
     };
   }
   const attestationHeader = res.headers.get('graph-attestation');

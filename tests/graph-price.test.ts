@@ -54,6 +54,42 @@ describe("каждая из четырёх проверок останавлив
     expect(out.snapshot).toBeUndefined();
   });
 
+  it("🔴 бросок разборщика заголовка и бросок проверяльщика называются РАЗНО", async () => {
+    // Найдено отделом сингера 12.09. Один общий catch на два вызова называл ЛЮБОЙ бросок
+    // `attestation_header_unreadable` — а заголовок при этом мог разобраться прекрасно:
+    // испорченный `r` давал точку не на кривой, viem бросал, и оператор шёл чинить
+    // заголовок вместо подписи.
+    const parseThrew = {
+      ...passingBase(),
+      parseAttestationHeader: () => {
+        throw new Error("attestation missing field: r");
+      },
+    } as unknown as PriceDeps;
+    const a = read(await handleGetVerifiedPrice({ symbol: "WETH" }, parseThrew));
+    expect(a.ok).toBe(false);
+    expect(a.stage).toBe("attestation");
+    expect(a.cause).toBe("attestation_header_unreadable");
+
+    // А бросок ПРОВЕРЯЛЬЩИКА — это нарушение его собственного контракта, и имя другое.
+    const verifyThrew = {
+      ...passingBase(),
+      verifyAttestation: async () => {
+        // Ровно то, что печатал viem: сообщение НЕСЁТ отвергнутый скаляр.
+        throw new Error(`expected valid r: 1 <= n < 115792089237316195423570985008687907852837564279074904382605163141518161494337, got 0x${"f".repeat(64)}`);
+      },
+    } as unknown as PriceDeps;
+    const b = read(await handleGetVerifiedPrice({ symbol: "WETH" }, verifyThrew));
+    expect(b.ok).toBe(false);
+    expect(b.stage).toBe("attestation");
+    expect(b.cause).toBe("attestation_verifier_threw");
+    expect(b.cause).not.toBe("attestation_header_unreadable");
+
+    // 🔴 И сообщение библиотеки НЕ уходит наружу: оно печатает отвергнутое значение.
+    const text = JSON.stringify(b);
+    expect(text).not.toContain("f".repeat(32));
+    expect(text).not.toContain("expected valid r");
+  });
+
   it("подписант не резолвится в индексатора с залогом — цены нет", async () => {
     const deps = { ...passingBase(), resolveIndexer: async () => ({ ok: false, reason: "allocation_not_found" }) } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));

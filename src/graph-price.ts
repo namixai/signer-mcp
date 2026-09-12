@@ -155,15 +155,43 @@ export async function handleGetVerifiedPrice(
   // 🔴 Разбор заголовка БРОСАЕТ на отсутствующем и на кривом — это его контракт. Инструмент
   // обязан отказать по имени, а не упасть: к этому месту платёж уже прошёл, и падение
   // отнимает у вызывающего и деньги, и причину.
-  let verification: any;
+  // 🔴 ДВА ЭТАПА, И КАЖДЫЙ НАЗЫВАЕТ СЕБЯ. Один общий catch на разбор заголовка И на
+  // проверку подписи называл ЛЮБОЙ бросок `attestation_header_unreadable` — а заголовок
+  // при этом мог разобраться прекрасно. Испорченный `r` давал точку не на кривой, viem
+  // бросал, и оператор шёл чинить заголовок вместо подписи. Найдено отделом сингера
+  // 12.09; корневая причина была в устаревшей копии `graph/attestation.js`, она обновлена
+  // в этом же изменении, но общий catch остался бы неверным и после неё.
+  let attestation: any;
   try {
-    const attestation = deps.parseAttestationHeader(q.attestationHeader);
-    verification = await deps.verifyAttestation(q.rawBody, attestation);
+    attestation = deps.parseAttestationHeader(q.attestationHeader);
   } catch (err: any) {
     return refuse(
       "attestation",
       q.attestationHeader ? "attestation_header_unreadable" : "attestation_header_missing",
+      // Сообщения `parseAttestationHeader` — наши и структурные: «must be a JSON object,
+      // got <тип>» и «missing field: <имя>». Значений они не несут, поэтому проходят.
       String(err?.message ?? err),
+      timings,
+    );
+  }
+
+  let verification: any;
+  try {
+    verification = await deps.verifyAttestation(q.rawBody, attestation);
+  } catch (err: any) {
+    // 🔴 Сюда попадать НЕ ДОЛЖНО: `verifyAttestation` объявляет, что отказывает по имени
+    // и не бросает. Если бросило — это нарушение его контракта, и называть это надо так,
+    // а не «заголовок нечитаем». И сообщение библиотеки НЕ передаётся: viem печатает
+    // отвергнутый скаляр целиком, то есть саму испорченную подпись. Наружу идёт только
+    // тип исключения.
+    return refuse(
+      "attestation",
+      "attestation_verifier_threw",
+      {
+        note: "verifyAttestation broke its own contract: it must refuse by name, never throw",
+        errorType: err?.constructor?.name ?? typeof err,
+        messageWithheld: "the library message is withheld because it quotes the rejected value back",
+      },
       timings,
     );
   }
