@@ -43,6 +43,16 @@ const fixtureNonce = (
 ).nonce;
 
 /** A guard that cannot be optimised away and says which mutation failed to apply. */
+/** CBOR head byte(s) for a major type and length — enough for rebuilding test documents. */
+function headOf(major: number, n: number): Buffer {
+  if (n < 24) return Buffer.from([(major << 5) | n]);
+  if (n < 0x100) return Buffer.from([(major << 5) | 24, n]);
+  const b = Buffer.alloc(3);
+  b[0] = (major << 5) | 25;
+  b.writeUInt16BE(n, 1);
+  return b;
+}
+
 function mutationApplied(condition: boolean, what: string): void {
   if (!condition) throw new Error(`MUTATION DID NOT APPLY: ${what}`);
 }
@@ -143,6 +153,83 @@ describe("verifyAttestationBody — the honest document", () => {
     expect(v.verified).toBe(false);
     expect(v.pcr0).toBeUndefined();
     expect(v.unreadable).toContain("attestation_doc_b64");
+  });
+});
+
+describe("CBOR — a legal re-packing is not a defect", () => {
+  it("🔴 accepts a COSE_Sign1 wrapped in tag 18, and verifies it identically", () => {
+    // RFC 8152 permits the tag. Our gateway sends the document untagged, so this branch
+    // was never exercised and, before it existed, a tagged document was refused with
+    // "unsupported major type 6" — calling a valid attestation unreadable and blaming the
+    // producer. Nothing broke because nothing sent one; that is not the same as correct.
+    const body = fixture();
+    const raw = Buffer.from(body.attestation_doc_b64 as string, "base64");
+    mutationApplied(raw[0] === 0x84, "the fixture is not a bare 4-item array to begin with");
+    const tagged = Buffer.concat([Buffer.from([0xd2]), raw]);
+    mutationApplied(tagged[0] === 0xd2, "the tag byte did not get prepended");
+
+    const plain = verifyAttestationBody(body, fixtureNonce);
+    const wrapped = verifyAttestationBody(
+      { ...body, attestation_doc_b64: tagged.toString("base64") },
+      fixtureNonce,
+    );
+    expect(wrapped.unreadable).toBeUndefined();
+    expect(wrapped.checks.document_readable).toBe(true);
+    // Identical verdict, not merely "also readable": same measurement, same signature
+    // result. A tag carries no bytes into the Sig_structure.
+    expect(wrapped.pcr0).toBe(plain.pcr0);
+    expect(wrapped.checks.signature_verified).toBe(plain.checks.signature_verified);
+    expect(wrapped.checks.root_pinned).toBe(plain.checks.root_pinned);
+  });
+
+  it("🔴 refuses tag 18 INSIDE the document — header and payload both", () => {
+    // The first version of the tag branch unwrapped tag 18 anywhere, and the same decoder
+    // reads sign1[0] and sign1[2]. A tagged protected header or payload would have
+    // unwrapped and then passed the type checks: a document no COSE implementation
+    // produces, accepted over bytes whose framing we had rewritten.
+    const body = fixture();
+    const raw = Buffer.from(body.attestation_doc_b64 as string, "base64");
+    const sign1 = decodeCbor(raw, true) as Buffer[];
+    const bstr = (x: Buffer) => Buffer.concat([headOf(2, x.length), x]);
+
+    for (const [label, prot, payload] of [
+      ["tagged protected header", Buffer.concat([Buffer.from([0xd2]), sign1[0]!]), sign1[2]!],
+      ["tagged payload", sign1[0]!, Buffer.concat([Buffer.from([0xd2]), sign1[2]!])],
+    ] as Array<[string, Buffer, Buffer]>) {
+      const rebuilt = Buffer.concat([
+        headOf(4, 4),
+        bstr(prot),
+        Buffer.from([0xa0]),
+        bstr(payload),
+        bstr(sign1[3]!),
+      ]);
+      mutationApplied(!rebuilt.equals(raw), `${label}: rebuild produced the original bytes`);
+      const v = verifyAttestationBody(
+        { ...body, attestation_doc_b64: rebuilt.toString("base64") },
+        fixtureNonce,
+      );
+      // Must be unreadable — not "parsed and then failed a check", which is what the
+      // recursive version produced and which misdirects the reader to the signature.
+      expect(v.verified, label).toBe(false);
+      expect(typeof v.unreadable, label).toBe("string");
+      expect(v.pcr0, label).toBeUndefined();
+      expect(v.checks.document_readable, label).toBe(false);
+    }
+  });
+
+  it("refuses any OTHER tag by number rather than swallowing it", () => {
+    const body = fixture();
+    const raw = Buffer.from(body.attestation_doc_b64 as string, "base64");
+    // Tag 61 (CWT) is legal CBOR and wrong here. Accepting semantics we do not implement
+    // is how a parser starts agreeing to things.
+    const wrong = Buffer.concat([Buffer.from([0xd8, 0x3d]), raw]);
+    const v = verifyAttestationBody(
+      { ...body, attestation_doc_b64: wrong.toString("base64") },
+      fixtureNonce,
+    );
+    expect(v.verified).toBe(false);
+    expect(v.pcr0).toBeUndefined();
+    expect(typeof v.unreadable).toBe("string");
   });
 });
 
