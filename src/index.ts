@@ -91,12 +91,26 @@ const DESC_LIST_VENUES =
   "ed25519). Read-only static manifest — does NOT need the Signer gateway " +
   "to be reachable. Call this first to discover what's signable.";
 
+// 🔴 THIS DESCRIPTION USED TO PROMISE A PROOF THE TOOL DID NOT PERFORM. It said the
+// tool "proves the code currently signing your orders matches the published source",
+// while the implementation sent no nonce and verified nothing at all. Both halves are
+// fixed rather than just the sentence: a nonce goes out, the document is opened, and the
+// wording below now claims only what the code checks. What the tool cannot establish is
+// stated in the same breath — an agent reading this is deciding whether to sign with real
+// money, and a description that oversells is worse than one that says less.
 const DESC_GET_ATTESTATION =
-  "Return the Signer enclave's AWS Nitro attestation document (PCR0, " +
-  "PCR1, PCR2 measurements + AWS-issued signature). This proves the code " +
-  "currently signing your orders matches the published source. The enclave's " +
-  "signing key NEVER leaves attested code. Verify the PCR0 against " +
-  "https://usenami.io/signer/attestations before trusting any place_order.";
+  "Fetch the Signer enclave's AWS Nitro attestation document with a FRESH NONCE and " +
+  "verify it locally, with no dependencies and no trust in this tool's own summary. " +
+  "Five named checks are returned and any of them can fail: the document decodes as a " +
+  "COSE_Sign1 (document_readable), the nonce inside it is the one just sent " +
+  "(nonce_echoed), its root certificate is the pinned AWS Nitro root (root_pinned), the " +
+  "certificate chain leads to that root (chain_verified), and the hardware signature " +
+  "covers these exact bytes (signature_verified). PCR0/PCR1/PCR2 are read out of the " +
+  "SIGNED bytes, not from a field beside them. WHAT THIS DOES NOT ESTABLISH: that PCR0 " +
+  "corresponds to the published source — rebuild the image from the public clone and " +
+  "compare, or query the on-chain PCR0 registry; and nothing about any past signature, " +
+  "since an attestation speaks about the code that answered this request. If any check " +
+  "is false, treat the document as no evidence rather than weak evidence.";
 
 const DESC_GET_ACCOUNT =
   "Return equity, free margin, and open positions for a venue. Read-only " +
