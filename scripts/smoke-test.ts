@@ -250,11 +250,40 @@ async function main(): Promise<void> {
         "  (gateway not reachable — error path is correct; live verify requires gateway up)",
       );
     } else {
+      // 🔴 This branch asserted `pcr0_sha384` — the gateway's own field, forwarded
+      // unverified. That is the shape the tool used to return, and in CI the gateway is
+      // deliberately unreachable, so the branch never ran: the check stood on the thing
+      // that was wrong and could not go red. It now asserts the verified shape.
       check(
-        "get_attestation returns PCR0 field",
-        typeof attestBody.pcr0_sha384 === "string" &&
-          attestBody.pcr0_sha384.length > 0,
-        `got: ${JSON.stringify(attestBody).slice(0, 200)}`,
+        "get_attestation verified the document it was handed",
+        attestBody.verified === true,
+        `verified=${JSON.stringify(attestBody.verified)} checks=${JSON.stringify(attestBody.checks)}`,
+      );
+      check(
+        "get_attestation reports all five named checks",
+        typeof attestBody.checks === "object" &&
+          attestBody.checks !== null &&
+          ["document_readable", "nonce_echoed", "root_pinned", "chain_verified", "signature_verified"]
+            .every((k) => typeof attestBody.checks[k] === "boolean"),
+        `got: ${JSON.stringify(attestBody.checks)}`,
+      );
+      check(
+        "get_attestation returns PCR0 read from the SIGNED document",
+        typeof attestBody.pcr0 === "string" && /^[0-9a-f]{96}$/.test(attestBody.pcr0),
+        `got: ${JSON.stringify(attestBody.pcr0)}`,
+      );
+      check(
+        "get_attestation sent a nonce and the document echoed it",
+        typeof attestBody.nonce_sent === "string" &&
+          attestBody.nonce_sent.length === 32 &&
+          attestBody.nonce_in_document === attestBody.nonce_sent,
+        `sent=${attestBody.nonce_sent} in_doc=${attestBody.nonce_in_document}`,
+      );
+      check(
+        "get_attestation ships the boundary with the answer, not only on failure",
+        Array.isArray(attestBody.do_not_trust_for) &&
+          attestBody.do_not_trust_for.join(" ").includes("published source"),
+        `got: ${JSON.stringify(attestBody.do_not_trust_for)}`,
       );
     }
   } catch (err) {

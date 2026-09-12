@@ -32,13 +32,13 @@ import { handleGetAttestation } from "../src/lib.js";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const fixture = () =>
-  JSON.parse(readFileSync(join(here, "fixtures/attestation-live.json"), "utf8")) as Record<
+  JSON.parse(readFileSync(join(here, "fixtures/attestation/live.json"), "utf8")) as Record<
     string,
     unknown
   >;
 const fixtureNonce = (
   JSON.parse(
-    readFileSync(join(here, "fixtures/attestation-live.nonce.json"), "utf8"),
+    readFileSync(join(here, "fixtures/attestation/live.nonce.json"), "utf8"),
   ) as { nonce: string }
 ).nonce;
 
