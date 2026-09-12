@@ -154,7 +154,12 @@ jobs:
             [ "$fatal" = "1" ] && exit 1
             echo "::warning::rehearsal: a real publish from this ref would be REFUSED (not a tag)"
           fi
-          if [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
+          # In reporting mode the branch case above does NOT exit, so this second check
+          # has to know it is only about tags — otherwise a branch dispatch reported the
+          # same problem twice, once as "not a tag" and once as "tag name mismatch".
+          # Measured on run 34706126288, and two warnings for one fault is how people
+          # learn to skim warnings.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
             echo "${verb}: the tag is '${GITHUB_REF_NAME}', the manifest says ${manifest}." >&2
             echo "Expected tag name: v${manifest}. Publishing a tag that names a different" >&2
             echo "version is how a release ends up untraceable to its own source." >&2
