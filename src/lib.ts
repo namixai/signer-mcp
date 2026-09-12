@@ -5,7 +5,14 @@
  * without booting a real MCP transport. index.ts wires these into MCP tools.
  */
 
+import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
+
+import {
+  NITRO_ROOT_SHA256,
+  NITRO_ROOT_SOURCE,
+  verifyAttestationBody,
+} from "./attestation.js";
 
 /**
  * Версия берётся ИЗ МАНИФЕСТА, а не дублируется константой.
@@ -475,10 +482,77 @@ export async function handleListVenues(): Promise<ToolResult> {
   return toolJson({ venues: STATIC_VENUES, count: STATIC_VENUES.length });
 }
 
-export async function handleGetAttestation(cfg: GatewayConfig): Promise<ToolResult> {
+/**
+ * 🔴 THIS HANDLER USED TO FORWARD A BLOB AND CALL IT PROOF.
+ *
+ * It called `/attestation` with no parameters and returned the JSON unchanged, under a
+ * description promising that it "proves the code currently signing your orders matches
+ * the published source". No nonce went out, so the document was bound to nothing and a
+ * replay of an old one was indistinguishable; nothing was verified, so the only thing the
+ * calling agent received was our assertion in a larger envelope. This is the one surface
+ * a third-party agent consumes, which made it the worst place in the product for that.
+ *
+ * Now: a fresh 16-byte nonce goes out, and the document that comes back is opened — the
+ * hardware signature over the COSE bytes, the certificate chain, the pinned root, and the
+ * nonce echo. The PCR0 returned is read out of the SIGNED bytes.
+ *
+ * The result always says which checks passed. When any of them fails, the document is
+ * still returned — a caller may want to look at it — but `verified` is false and
+ * `do_not_trust_for` says what must not be concluded from it. An unreadable response is
+ * reported as "could not check", never as a failed enclave.
+ */
+export async function handleGetAttestation(
+  cfg: GatewayConfig,
+  nonceSource: () => string = () => randomBytes(16).toString("hex"),
+): Promise<ToolResult> {
+  const nonce = nonceSource();
   try {
-    const data = await callGateway<unknown>("/attestation", {}, cfg);
-    return toolJson(data);
+    const data = await callGateway<unknown>(
+      `/attestation?nonce=${encodeURIComponent(nonce)}`,
+      {},
+      cfg,
+    );
+    const verdict = verifyAttestationBody(data, nonce);
+    const proves = verdict.verified
+      ? [
+          "This document was produced by an AWS Nitro enclave whose certificate chain " +
+            "leads to the pinned Nitro root, and it was signed after we sent this nonce.",
+          "The measurement below (pcr0) is the one inside those signed bytes, not a " +
+            "field beside them.",
+        ]
+      : [];
+    const doNotTrustFor = [
+      "That pcr0 corresponds to the published source. Nothing here establishes that: " +
+        "rebuild the image from the public clone and compare, or ask the on-chain PCR0 " +
+        "registry. This tool returns the measurement; it does not vouch for its meaning.",
+      "That a specific order was signed by this enclave. The attestation is about the " +
+        "code that answered this request, not about any past signature.",
+    ];
+    if (!verdict.verified) {
+      doNotTrustFor.unshift(
+        "Anything at all, until the failing check above is explained. A document that " +
+          "does not verify is not weaker evidence — it is none.",
+      );
+    }
+    return toolJson({
+      verified: verdict.verified,
+      checks: verdict.checks,
+      could_not_check: verdict.unreadable,
+      pcr0: verdict.pcr0,
+      pcr1: verdict.pcr1,
+      pcr2: verdict.pcr2,
+      module_id: verdict.moduleId,
+      timestamp_ms: verdict.timestampMs,
+      nonce_sent: verdict.nonceSent,
+      nonce_in_document: verdict.nonceInDocument,
+      root_sha256: verdict.rootSha256,
+      pinned_root_sha256: NITRO_ROOT_SHA256,
+      pinned_root_published_at: NITRO_ROOT_SOURCE,
+      notes: verdict.notes,
+      proves,
+      do_not_trust_for: doNotTrustFor,
+      document: data,
+    });
   } catch (err) {
     const e = err as Error;
     return toolError(

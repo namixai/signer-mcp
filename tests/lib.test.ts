@@ -142,14 +142,24 @@ describe("list_venues", () => {
 });
 
 describe("get_attestation", () => {
-  it("returns parsed JSON on 200", async () => {
+  // 🔴 THE TEST THAT USED TO LIVE HERE ASSERTED THE DEFECT. It fed the handler
+  // `{ pcr0: "abc123" }` and required that `abc123` come back out as the measurement —
+  // which is exactly what was wrong: the tool forwarded whatever the gateway said,
+  // unverified, under a description promising proof. The replacement asserts the
+  // opposite, and the full verification surface lives in tests/attestation.test.ts.
+  it("🔴 a `pcr0` field with no signed document behind it is NOT a measurement", async () => {
     const cfg = {
       gatewayUrl: "https://signer.test",
       fetchImpl: mockFetch({ pcr0: "abc123", issued_at: "2026-05-31T18:00:00Z" }),
     };
     const res = await handleGetAttestation(cfg);
     const body = jsonBodyOf(res);
-    expect(body.pcr0).toBe("abc123");
+    expect(body.verified).toBe(false);
+    expect(body.pcr0).toBeUndefined();
+    expect(String(body.could_not_check)).toContain("attestation_doc_b64");
+    // The unverifiable response is still shown, so a caller can look at it — it is just
+    // not dressed up as evidence.
+    expect((body.document as { pcr0?: string }).pcr0).toBe("abc123");
   });
 
   it("surfaces hint on gateway error", async () => {
@@ -160,7 +170,10 @@ describe("get_attestation", () => {
     const res = await handleGetAttestation(cfg);
     expect(res.isError).toBe(true);
     const body = jsonBodyOf(res);
-    expect(body.error).toContain("gateway /attestation failed (500)");
+    // The path now carries the nonce, so this asserts the parts that matter rather than
+    // an exact string that would have to be edited every time the query changes.
+    expect(body.error).toContain("/attestation?nonce=");
+    expect(body.error).toContain("failed (500)");
     expect(body.hint).toContain("list_venues still works");
   });
 });
