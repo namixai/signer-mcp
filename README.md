@@ -271,6 +271,32 @@ the x402 gateway, which needs `X402_PRIVATE_KEY`. Without that key the tool refu
 `no_payer_key` and spends nothing — it does not send an unpaid request, and it does not
 quietly fall back to an unverified source.
 
+### Where the signed headers go
+
+🔴 **On `get_account`, `place_order` and `cancel_order` the signed auth headers pass
+through your client.** The gateway returns `{method, url, headers}`; this package then
+sends that request to that URL itself. Those headers are what authenticates you to the
+exchange: the API **key** travels in them (`X-MBX-APIKEY` on Binance, `OK-ACCESS-KEY` on
+OKX) and on OKX the **passphrase** travels with it. Only the signing **secret** stays
+inside the enclave — that is the claim we make, and it is narrower than "your credentials
+never leave".
+
+What follows from that, stated plainly rather than left to inference:
+
+* **Anything that can read your process memory, your logs, or your outbound traffic at
+  that moment can read those headers.** They are short-lived and scoped to one request,
+  which limits the damage; it does not remove it.
+* **There is no host allow-list in this client.** It sends to whatever URL the gateway
+  named. A gateway that has been compromised or impersonated could name its own host and
+  collect the key. Pin the gateway you trust (`SIGNER_GATEWAY_URL`) and verify its
+  attestation — `get_attestation` exists for this, and the enclave measurement is what
+  tells you which code answered.
+
+`place_hedge` is the exception and the model for the rest: both legs are signed and both
+venue calls are fired **server-side**, so nothing authenticating ever reaches your
+process. Moving the other three onto that shape is the fix; until it lands, this section
+is the honest description of what happens today.
+
 ### `get_account`
 
 Returns equity, free margin, and open positions for a venue.
@@ -287,11 +313,14 @@ Returns equity, free margin, and open positions for a venue.
 }
 ```
 
-Read-only. Requires `SIGNER_API_TOKEN`.
+Read-only. Requires `SIGNER_API_TOKEN`. The signed headers for this call pass through
+your client — see [Where the signed headers go](#where-the-signed-headers-go).
 
 ### `place_order`
 
-Place a single market or limit order. The enclave signs the payload after checking policy caps.
+Place a single market or limit order. The enclave signs the payload after checking policy caps,
+and your client then sends the signed request to the venue — see
+[Where the signed headers go](#where-the-signed-headers-go).
 
 Args:
 - `venue` — one of `binance | okx | asterdex | kucoin | bybit | hyperliquid_testnet | hyperliquid_main`. ⚠️ v0 has structured order routes for **`binance | okx` only** — other venues return a clear error (they expose read-only account access); and check `list_venues` `status` first
@@ -341,7 +370,10 @@ Places a 2-leg hedge with **atomic signing**: both legs are signed inside the
 enclave all-or-nothing (a policy denial on either leg means **nothing** is even
 sent), then the gateway fires both venue calls **server-side in parallel** — the
 leg gap collapses to the venues' own latency spread and the signed auth headers
-never transit through your client. ⚠️ Venue **execution is not atomic**: the
+never transit through your client. 🔴 That last part is true **of this tool only**:
+`get_account`, `place_order` and `cancel_order` do transit them, for the reasons in
+[Where the signed headers go](#where-the-signed-headers-go).
+Do not read this sentence as a property of the package. ⚠️ Venue **execution is not atomic**: the
 `partial` and `unknown` statuses below exist precisely because an exchange can
 accept one leg and lose or reject the other.
 
@@ -373,7 +405,9 @@ Read the result's `status` **before anything else**:
 Cancels an outstanding order by its venue order id. Idempotent — cancelling an already-filled or non-existent order returns `ok: false` with a venue reason instead of erroring.
 
 Available for `binance | okx` in v0 — other venues have no structured cancel
-route yet and return a clear error (same limitation as `place_order`).
+route yet and return a clear error (same limitation as `place_order`). The signed headers
+for this call pass through your client — see
+[Where the signed headers go](#where-the-signed-headers-go).
 
 Args:
 - `venue` — `binance | okx`
