@@ -57,45 +57,111 @@ permissions:
   id-token: write # provenance: this is the permission whose absence throws the error above
 
 jobs:
+  # 🔴 THE REF CHECK LIVES IN ITS OWN JOB, AND THE REASON IS THE ORDER OF OPERATIONS.
+  # GitHub applies the environment's deployment policy BEFORE a runner starts. So when the
+  # dispatch ref is not a `v*` tag, the publishing job below never begins — measured on
+  # run 34705999831: zero steps, two seconds — and the "refusing: this run is on branch …"
+  # message inside it can never be printed. The operator sees a failure with no reason.
+  #
+  # This job declares no environment, so it always runs and always says why. It gates the
+  # one below with `needs:`.
+  #
+  # ⚠️ WHAT IT IS NOT: this is diagnostics, not a lock. Anyone who can bring their own
+  # copy of this file can delete this job as easily as the checks inside the next one. See
+  # the note on `environment:` below for what that means and what actually restricts it.
+  ref-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+      - name: Publishing is allowed from a TAG only, and the tag must name this version
+        run: |
+          fatal=1
+          verb="refusing"
+          if [ "${{ inputs.dry_run }}" != "false" ]; then
+            fatal=0
+            # A rehearsal reports rather than refuses, and must not say "refusing" — a
+            # word that stops one reader and is ignored by the next is worse than either.
+            verb="would refuse"
+          fi
+          manifest="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "${verb}: this run is on ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}', not a tag." >&2
+            echo "npm publish runs the checked-out tree's prepare script with the publish" >&2
+            echo "token in the environment, so a branch dispatch would run that branch's" >&2
+            echo "code with the token. Publish from a tag:" >&2
+            echo "    git tag v${manifest} && git push origin v${manifest}" >&2
+            echo "then dispatch this workflow with that tag selected as the ref." >&2
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: a real publish from this ref would be REFUSED (not a tag)"
+          # In reporting mode the branch case above does NOT exit, so this second check
+          # has to know it is only about tags — otherwise a branch dispatch reported the
+          # same problem twice, once as "not a tag" and once as "tag name mismatch".
+          elif [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
+            echo "${verb}: the tag is '${GITHUB_REF_NAME}', the manifest says ${manifest}." >&2
+            echo "Expected tag name: v${manifest}. Publishing a tag that names a different" >&2
+            echo "version is how a release ends up untraceable to its own source." >&2
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: a real publish from this ref would be REFUSED (tag/version mismatch)"
+          else
+            echo "ref: tag ${GITHUB_REF_NAME} — matches the manifest"
+          fi
+
   publish:
+    needs: ref-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # 🔴 THE INVARIANT THIS JOB RELIES ON, stated first because it cannot go stale:
-    # the publish token must be reachable ONLY through an environment, and that
-    # environment must admit only release tags. Then nothing outside this path can read
-    # the token — not another workflow, not another branch, not a fork of this file with
-    # the guards deleted — because the token is not where they can reach.
+    # 🔴 WHAT IS TRUE, AND THE INFERENCE THAT IS NOT. Both halves, because the second one
+    # is the kind of thing a release note quietly asserts.
     #
-    # ⚠️ A SNAPSHOT, LABELLED AS ONE, because the last version of this comment was a
-    # measurement that went stale inside the hour and ended up asserting the opposite of
-    # what its own commands return. Measured 2026-09-12 16:40 UTC:
+    # TRUE, and measured 2026-09-12 16:40 UTC: the publish token is reachable only through
+    # this environment. There is no repository-wide secret, the token is an environment
+    # secret, and the environment's single policy admits `v*` tags.
     #
     #   environments/npm-publish          → protection_rules: [branch_policy]
-    #                                        deployment_branch_policy: custom
     #   …/deployment-branch-policies      → 1 rule: `v*`, type `tag`
     #   actions/secrets                    → 0
     #   environments/npm-publish/secrets   → 1: NPM_TOKEN
     #
-    # So on that date the invariant held: no repository-wide secret exists, the token is
-    # an environment secret, and the environment admits only `v*` tags. Re-measure rather
-    # than trust this block — if it disagrees with the API, the API is right:
+    # 🔴 NOT TRUE: "therefore only a real release can publish". The policy matches the
+    # NAME of the ref, and `workflow_dispatch` runs the workflow file FROM THAT REF. So
+    # anyone who can create a tag called `v1.2.3` brings their own copy of this file with
+    # it — without the ref-check job, without these guards — and that copy enters the
+    # environment and reads the token. The lock is on the door; the wall can be replaced.
+    #
+    # Measured too, so nobody has to assume: `repos/namixai/signer-mcp/rulesets` returns
+    # ZERO rulesets, the tag-protection endpoint returns Not Found, and the environment's
+    # only protection rule is `branch_policy` — there are no required reviewers. Tag
+    # creation is unrestricted today.
+    #
+    # So the guards in this file are diagnostics for an honest operator, not a barrier
+    # against someone who can push a tag. Saying otherwise would be the same overreach
+    # this repository has spent two days removing from its own prose.
+    #
+    # What would actually close it, and both are repository settings rather than workflow
+    # code: required reviewers on this environment — a human approves each deployment no
+    # matter what the workflow file says — and a ruleset restricting who may create `v*`
+    # tags. Until then, the honest description of this line is "the token lives behind an
+    # environment whose gate is a name".
+    #
+    # Re-measure rather than trusting this block; if the API disagrees, the API is right:
     #
     #   gh api repos/namixai/signer-mcp/environments
     #   gh api repos/namixai/signer-mcp/environments/npm-publish/deployment-branch-policies
     #   gh api repos/namixai/signer-mcp/actions/secrets
     #   gh api repos/namixai/signer-mcp/environments/npm-publish/secrets
+    #   gh api repos/namixai/signer-mcp/rulesets
     #
-    # 🔴 AND A CONSEQUENCE OF THAT GATE, MEASURED RATHER THAN GUESSED. With the
-    # environment named unconditionally, a REHEARSAL from a branch never started: run
-    # 34705999831 on `fix/release-text-matches-mechanism` failed after two seconds with
-    # ZERO steps executed — the environment refusing a ref that is not a `v*` tag. The
-    # rehearsal mode, and the "would refuse" reporting it exists for, were unreachable
-    # from anywhere you would actually rehearse.
-    #
-    # So the environment is entered only by a real publish. This does not weaken anything:
-    # the token lives in the environment, so anything that wants it must declare the
-    # environment and take the policy with it. A rehearsal wants no token — it publishes
-    # nothing — and now runs where a person can use it.
+    # And the environment is entered only by a real publish, because with it named
+    # unconditionally a REHEARSAL from a branch never started: run 34705999831 failed after
+    # two seconds with ZERO steps executed, the policy refusing a ref that is not a `v*`
+    # tag. A rehearsal needs no token — it publishes nothing — so it now runs where a
+    # person can actually use it.
     environment: ${{ inputs.dry_run == false && 'npm-publish' || '' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -127,48 +193,6 @@ jobs:
       # instead of a long-lived token. Those are repository settings, not workflow code,
       # and they are not done: measured 12.09, this repository has 0 environments and 0
       # secrets beyond the publish token.
-      # 🔴 RUNS ON EVERY RUN, INCLUDING A REHEARSAL. It used to be skipped when
-      # dry_run was true, and the rehearsal then reported "all guards passed" while this
-      # guard had not run at all — a green that answered a question nobody asked. A
-      # rehearsal is worth having precisely because it tells you whether a REAL run would
-      # be allowed, so the check happens either way and only the consequence differs:
-      # fatal for a real publish, reported for a rehearsal.
-      - name: Publishing is allowed from a TAG only, and the tag must name this version
-        run: |
-          manifest="$(node -p "require('./package.json').version")"
-          fatal=1
-          verb="refusing"
-          if [ "${{ inputs.dry_run }}" != "false" ]; then
-            fatal=0
-            # A rehearsal reports rather than refuses, and must not say "refusing" — a
-            # word that stops one reader and is ignored by the next is worse than either.
-            verb="would refuse"
-          fi
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
-            echo "${verb}: this run is on ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}', not a tag." >&2
-            echo "npm publish runs the checked-out tree's prepare script with the publish" >&2
-            echo "token in the environment, so a branch dispatch would run that branch's" >&2
-            echo "code with the token. Publish from a tag:" >&2
-            echo "    git tag v${manifest} && git push origin v${manifest}" >&2
-            echo "then dispatch this workflow with that tag selected as the ref." >&2
-            [ "$fatal" = "1" ] && exit 1
-            echo "::warning::rehearsal: a real publish from this ref would be REFUSED (not a tag)"
-          fi
-          # In reporting mode the branch case above does NOT exit, so this second check
-          # has to know it is only about tags — otherwise a branch dispatch reported the
-          # same problem twice, once as "not a tag" and once as "tag name mismatch".
-          # Measured on run 34706126288, and two warnings for one fault is how people
-          # learn to skim warnings.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
-            echo "${verb}: the tag is '${GITHUB_REF_NAME}', the manifest says ${manifest}." >&2
-            echo "Expected tag name: v${manifest}. Publishing a tag that names a different" >&2
-            echo "version is how a release ends up untraceable to its own source." >&2
-            [ "$fatal" = "1" ] && exit 1
-            echo "::warning::rehearsal: a real publish from this ref would be REFUSED (tag/version mismatch)"
-          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            echo "ref: tag ${GITHUB_REF_NAME} — matches the manifest"
-          fi
-
       - name: The version you typed must be the version in the manifest
         run: |
           manifest="$(node -p "require('./package.json').version")"
@@ -207,18 +231,35 @@ jobs:
             echo "changelog top entry: $top"
           fi
 
+      # 🔴 THREE OUTCOMES, NOT TWO, BECAUSE `npm view` FAILS FOR MORE THAN ONE REASON.
+      # This step used to treat ANY non-zero exit as "the version is not published" and
+      # walk on. So an unreachable registry — our own network, npm's outage, a wrong
+      # registry URL — read as a green light to publish. Diagnostics deciding the outcome,
+      # which is the failure this project keeps finding in other people's code.
+      #
+      # Measured rather than assumed: a missing version answers `npm error code E404`; an
+      # unreachable registry answers `npm error code ENOTFOUND`. Both exit non-zero. Only
+      # the first is an ANSWER about the registry's contents.
       - name: That version must not already be in the registry
         run: |
           fatal=1; verb="refusing"
           if [ "${{ inputs.dry_run }}" != "false" ]; then fatal=0; verb="would refuse"; fi
           manifest="$(node -p "require('./package.json').version")"
-          if npm view "@usenami/signer-mcp@$manifest" version >/dev/null 2>&1; then
+          if out="$(npm view "@usenami/signer-mcp@$manifest" version 2>&1)"; then
             echo "${verb}: $manifest is already published. npm versions are immutable;" >&2
             echo "bump the version rather than trying to replace one." >&2
             [ "$fatal" = "1" ] && exit 1
             echo "::warning::rehearsal: a real publish would be REFUSED ($manifest is already in the registry)"
+          elif printf '%s' "$out" | grep -q 'code E404'; then
+            echo "$manifest is not in the registry yet (E404 — a confirmed answer)"
           else
-            echo "$manifest is not in the registry yet"
+            # Neither "it is there" nor "it is not". Publishing on a non-answer is how a
+            # version gets overwritten or a release gets attempted twice.
+            echo "could not check whether $manifest is published: npm answered something" >&2
+            echo "other than E404, so this is not an answer about the registry's contents." >&2
+            printf '%s\n' "$out" | head -5 >&2
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: the registry could not be consulted — a real publish would STOP here"
           fi
 
       - name: Install
