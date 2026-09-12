@@ -60,29 +60,43 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # 🔴 THIS LINE IS NOT A GATE TODAY, AND THE PR THAT ADDED IT IMPLIED IT WAS. Measured
-    # again with the API rather than from memory:
+    # 🔴 THE INVARIANT THIS JOB RELIES ON, stated first because it cannot go stale:
+    # the publish token must be reachable ONLY through an environment, and that
+    # environment must admit only release tags. Then nothing outside this path can read
+    # the token — not another workflow, not another branch, not a fork of this file with
+    # the guards deleted — because the token is not where they can reach.
     #
-    #   repos/namixai/signer-mcp/environments        → 1: npm-publish,
-    #                                                   protection_rules: [],
-    #                                                   deployment_branch_policy: null
-    #   repos/.../actions/secrets                    → 1: NPM_TOKEN
-    #   repos/.../environments/npm-publish/secrets   → 0
+    # ⚠️ A SNAPSHOT, LABELLED AS ONE, because the last version of this comment was a
+    # measurement that went stale inside the hour and ended up asserting the opposite of
+    # what its own commands return. Measured 2026-09-12 16:40 UTC:
     #
-    # Two consequences, and the second is the sharper one. The environment has no required
-    # reviewers and no branch policy, so naming it delays nothing. And NPM_TOKEN is a
-    # REPOSITORY secret, not an environment secret — so the environment cannot scope
-    # access to it at all: any workflow, on any branch, can read that token. Putting
-    # `environment:` on the job does not change that by one bit.
+    #   environments/npm-publish          → protection_rules: [branch_policy]
+    #                                        deployment_branch_policy: custom
+    #   …/deployment-branch-policies      → 1 rule: `v*`, type `tag`
+    #   actions/secrets                    → 0
+    #   environments/npm-publish/secrets   → 1: NPM_TOKEN
     #
-    # What actually holds today is the tag check below, inside this workflow. That is
-    # real, and it is narrower than "protected by an environment" sounds.
+    # So on that date the invariant held: no repository-wide secret exists, the token is
+    # an environment secret, and the environment admits only `v*` tags. Re-measure rather
+    # than trust this block — if it disagrees with the API, the API is right:
     #
-    # What would make this line a gate, in the repository settings and therefore in the
-    # owner's hands rather than in this file: required reviewers on the environment, a
-    # deployment branch/tag policy, and MOVING NPM_TOKEN from a repository secret to an
-    # environment secret so that reaching it requires passing the environment.
-    environment: npm-publish
+    #   gh api repos/namixai/signer-mcp/environments
+    #   gh api repos/namixai/signer-mcp/environments/npm-publish/deployment-branch-policies
+    #   gh api repos/namixai/signer-mcp/actions/secrets
+    #   gh api repos/namixai/signer-mcp/environments/npm-publish/secrets
+    #
+    # 🔴 AND A CONSEQUENCE OF THAT GATE, MEASURED RATHER THAN GUESSED. With the
+    # environment named unconditionally, a REHEARSAL from a branch never started: run
+    # 34705999831 on `fix/release-text-matches-mechanism` failed after two seconds with
+    # ZERO steps executed — the environment refusing a ref that is not a `v*` tag. The
+    # rehearsal mode, and the "would refuse" reporting it exists for, were unreachable
+    # from anywhere you would actually rehearse.
+    #
+    # So the environment is entered only by a real publish. This does not weaken anything:
+    # the token lives in the environment, so anything that wants it must declare the
+    # environment and take the policy with it. A rehearsal wants no token — it publishes
+    # nothing — and now runs where a person can use it.
+    environment: ${{ inputs.dry_run == false && 'npm-publish' || '' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
