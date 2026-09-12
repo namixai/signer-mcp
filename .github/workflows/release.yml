@@ -122,25 +122,66 @@ jobs:
 
       # A publish that says it succeeded while the attestation is missing is exactly the
       # state we are trying to leave, so the run checks the registry rather than trusting
-      # its own exit code. The registry needs a moment to index.
+      # its own exit code.
+      #
+      # 🔴 TWO OUTCOMES, AND THEY MUST NOT SHARE A MESSAGE. The first version of this step
+      # asked six times over one minute and then said "published, but could not confirm".
+      # Measured on the 0.8.0 release (run 34694042383): indexing took longer than that,
+      # the step went red, and two minutes later the provenance was there. Red was the
+      # right call — a clean release must not be reported on an unconfirmed attestation —
+      # but the wording collapsed two different facts:
+      #
+      #   * 200 with an EMPTY attestation list is an ANSWER. The registry knows this
+      #     version and says there is no provenance. That means --provenance did not take
+      #     effect (most likely the id-token permission) and the publish went out bare.
+      #     Exit 1.
+      #   * non-200 until the window runs out is a COULD-NOT-CONFIRM. The registry has not
+      #     said anything about this version yet. The package is almost certainly fine and
+      #     a human needs to look again in a few minutes. Exit 2.
+      #
+      # The window is now about eight minutes with a growing pause, and every attempt is
+      # printed so the waiting is visible rather than looking like a hang.
       - name: Prove the provenance is actually there
         run: |
           manifest="$(node -p "require('./package.json').version")"
+          # An empty manifest would build a URL without a version, which answers 404
+          # forever — the check would then report "could not confirm" on every release and
+          # look like registry lag. The guards above make that impossible today, and this
+          # line means this step does not depend on them staying there.
+          if [ -z "$manifest" ]; then
+            echo "refusing: could not read a version out of package.json" >&2
+            exit 2
+          fi
           url="https://registry.npmjs.org/-/npm/v1/attestations/@usenami/signer-mcp@$manifest"
-          for attempt in 1 2 3 4 5 6; do
-            code="$(curl -s -o /tmp/att.json -w '%{http_code}' "$url")"
+          waits="10 15 20 30 30 45 45 60 60 60 60 60"
+          attempt=0
+          for pause in $waits; do
+            attempt=$((attempt + 1))
+            code="$(curl -s -o /tmp/att.json -w '%{http_code}' "$url" || echo 000)"
             if [ "$code" = "200" ]; then
-              echo "attestations endpoint: 200"
-              node -e "
-                const a = require('/tmp/att.json').attestations || [];
-                console.log('predicate types:', a.map(x => x.predicateType).join(', ') || '(none)');
-                if (a.length === 0) { console.error('200 with no attestations is not provenance'); process.exit(1); }
-              "
-              exit 0
+              n="$(node -p "((require('/tmp/att.json').attestations)||[]).length" 2>/dev/null || echo 0)"
+              if [ "$n" -gt 0 ]; then
+                echo "provenance is there: HTTP 200, $n attestation(s)"
+                node -e "
+                  for (const x of require('/tmp/att.json').attestations) {
+                    console.log('  predicateType:', x.predicateType);
+                  }
+                "
+                exit 0
+              fi
+              echo "🔴 NO PROVENANCE: the registry answered 200 for this version and the" >&2
+              echo "   attestation list is EMPTY. That is an answer, not indexing lag: the" >&2
+              echo "   publish went out without provenance — check the id-token permission." >&2
+              exit 1
             fi
-            echo "attempt $attempt: $code — waiting for the registry to index"
-            sleep 10
+            echo "attempt ${attempt}: HTTP ${code} — not indexed yet, waiting ${pause}s"
+            sleep "$pause"
           done
-          echo "published, but the attestations endpoint never answered 200." >&2
-          echo "Say so out loud rather than reporting a clean release." >&2
-          exit 1
+          echo "⚠️ COULD NOT CONFIRM within the window (${attempt} attempts). This is NOT" >&2
+          echo "   the same as 'no provenance': the registry never answered 200, so it has" >&2
+          echo "   said nothing about this version yet. The package is most likely published." >&2
+          echo "   Check by hand once it indexes:" >&2
+          echo "     curl -s ${url} | jq '.attestations[].predicateType'" >&2
+          echo "   This run is red on purpose: a clean release must not be reported on an" >&2
+          echo "   attestation nobody has seen." >&2
+          exit 2
