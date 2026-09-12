@@ -1,0 +1,88 @@
+name: npm release (with build provenance)
+
+# 🔴 ЗАЧЕМ ОТДЕЛЬНЫЙ ВЫПУСК ЗДЕСЬ, А НЕ В namixai-terminal
+#
+# Пакет публиковался из приватного репозитория, и npm отказывал в провенансе:
+# «Unsupported GitHub Actions source repository visibility: private» (E422).
+# Отказ верный — sigstore связывает тарбол с ПУБЛИЧНЫМ исходником, а связать
+# его с приватным нечем.
+#
+# Следствие было прямое: посторонний, проверявший нас как судья, запросил у
+# реестра аттестацию пакета и получил 404. Для продукта, который продаёт
+# «проверь, что крутится, не веря нам на слово», это та же дыра, что
+# протухшая таблица тегов, только в npm: связать опубликованный тарбол с
+# исходником нельзя.
+#
+# Исходник живёт ЗДЕСЬ и репозиторий публичный, поэтому провенанс выдаётся.
+# Лечится не флагом, а местом публикации — флаг лишь следствие.
+#
+# 🔴 ЗАПУСК ТОЛЬКО РУЧНОЙ. Публикация в npm необратима: версию нельзя
+# переопубликовать, и снятая версия оставляет дыру в истории пакета. Решение
+# о выпуске принимает человек, а не push тега.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Собрать и показать, что ушло бы в реестр, НЕ публикуя"
+        type: boolean
+        default: true
+
+concurrency:
+  group: signer-mcp-release
+  cancel-in-progress: false   # никогда не рвать публикацию на полпути
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Требуется sigstore: этим токеном GitHub подтверждает, ЧТО именно
+      # собиралось и из какого коммита. Без него провенанса не будет.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Версия тега совпадает с package.json
+        # Тег не обязателен при ручном запуске, но если он есть — расхождение
+        # версий означает, что публикуется не то, что помечено.
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "package.json: $PKG_VERSION"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME##*v}"
+            if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+              echo "::error::тег $TAG_VERSION не совпадает с package.json $PKG_VERSION"
+              exit 1
+            fi
+          fi
+
+      - name: Install
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Tests
+        run: npm test
+
+      - name: Что ушло бы в реестр
+        run: npm pack --dry-run
+
+      - name: Публикация с провенансом
+        if: ${{ inputs.dry_run == false }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
+        run: npm publish --access public --provenance
+
+      - name: Сухой прогон — ничего не опубликовано
+        if: ${{ inputs.dry_run != false }}
+        run: |
+          echo "::notice::Сухой прогон. Сборка и тесты прошли, в реестр ничего не ушло."
+          echo "Для настоящей публикации запустить этот процесс с dry_run=false."
