@@ -154,33 +154,59 @@ jobs:
           fi
           url="https://registry.npmjs.org/-/npm/v1/attestations/@usenami/signer-mcp@$manifest"
           waits="10 15 20 30 30 45 45 60 60 60 60 60"
+          total=$(echo $waits | wc -w | tr -d ' ')
           attempt=0
           for pause in $waits; do
             attempt=$((attempt + 1))
             code="$(curl -s -o /tmp/att.json -w '%{http_code}' "$url" || echo 000)"
             if [ "$code" = "200" ]; then
-              n="$(node -p "((require('/tmp/att.json').attestations)||[]).length" 2>/dev/null || echo 0)"
-              if [ "$n" -gt 0 ]; then
-                echo "provenance is there: HTTP 200, $n attestation(s)"
-                node -e "
-                  for (const x of require('/tmp/att.json').attestations) {
-                    console.log('  predicateType:', x.predicateType);
-                  }
-                "
-                exit 0
+              # 🔴 THE BODY IS INSPECTED, NOT JUST THE STATUS. The first version asked node
+              # for `attestations.length` with `|| echo 0` behind it, which turned three
+              # different situations into two wrong answers: malformed JSON and a
+              # non-array `attestations` both reported "the registry says there is no
+              # provenance", and — the dangerous direction — a non-empty STRING has a
+              # `.length`, so `{"attestations":"nope"}` would have gone down the SUCCESS
+              # branch. A false green on the one check whose whole job is to prevent false
+              # greens. Shape is now checked explicitly, and the three outcomes get three
+              # exit codes.
+              node -e "
+                const fs = require('node:fs');
+                let body;
+                try { body = JSON.parse(fs.readFileSync('/tmp/att.json', 'utf8')); }
+                catch { process.exit(4); }                    // not JSON at all
+                const a = body && body.attestations;
+                if (!Array.isArray(a)) process.exit(4);       // 200, but not the shape we know
+                if (a.length === 0) process.exit(3);          // an answer: no provenance
+                if (!a.every((x) => x && typeof x.predicateType === 'string')) process.exit(4);
+                console.log('provenance is there: HTTP 200,', a.length, 'valid attestation(s)');
+                for (const x of a) console.log('  predicateType:', x.predicateType);
+                process.exit(0);
+              " && exit 0
+              shape=$?
+              if [ "$shape" = "3" ]; then
+                echo "🔴 NO PROVENANCE: the registry answered 200 for this version and the" >&2
+                echo "   attestation list is EMPTY. That is an answer, not indexing lag: the" >&2
+                echo "   publish went out without provenance — check the id-token permission." >&2
+                exit 1
               fi
-              echo "🔴 NO PROVENANCE: the registry answered 200 for this version and the" >&2
-              echo "   attestation list is EMPTY. That is an answer, not indexing lag: the" >&2
-              echo "   publish went out without provenance — check the id-token permission." >&2
-              exit 1
+              # shape=4: a 200 we cannot read. Not evidence either way, so it is treated as
+              # "not yet" and retried rather than announced as a verdict.
+              echo "attempt ${attempt}: HTTP 200 but the body is not a readable attestation list — retrying"
+            else
+              echo "attempt ${attempt}: HTTP ${code} — not indexed yet"
             fi
-            echo "attempt ${attempt}: HTTP ${code} — not indexed yet, waiting ${pause}s"
-            sleep "$pause"
+            # Sleep only while another lookup remains. The first version slept after the
+            # LAST attempt too: a full minute of waiting whose result was never read, and
+            # provenance that indexed during it went unnoticed.
+            if [ "$attempt" -lt "$total" ]; then
+              echo "  waiting ${pause}s"
+              sleep "$pause"
+            fi
           done
           echo "⚠️ COULD NOT CONFIRM within the window (${attempt} attempts). This is NOT" >&2
-          echo "   the same as 'no provenance': the registry never answered 200, so it has" >&2
-          echo "   said nothing about this version yet. The package is most likely published." >&2
-          echo "   Check by hand once it indexes:" >&2
+          echo "   the same as 'no provenance': the registry never returned a readable" >&2
+          echo "   attestation list, so it has said nothing usable about this version yet." >&2
+          echo "   The package is most likely published. Check by hand once it indexes:" >&2
           echo "     curl -s ${url} | jq '.attestations[].predicateType'" >&2
           echo "   This run is red on purpose: a clean release must not be reported on an" >&2
           echo "   attestation nobody has seen." >&2
