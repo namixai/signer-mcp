@@ -67,8 +67,11 @@ jobs:
   # one below with `needs:`.
   #
   # ⚠️ WHAT IT IS NOT: this is diagnostics, not a lock. Anyone who can bring their own
-  # copy of this file can delete this job as easily as the checks inside the next one. See
-  # the note on `environment:` below for what that means and what actually restricts it.
+  # copy of this file deletes this job as easily as the checks inside the next one — a
+  # guard written in the artefact it guards restrains only whoever is running it honestly.
+  # What does restrain the other case is the environment below, and only because the token
+  # lives there rather than here; read the note on `environment:` for what that gate
+  # covers and what it does not, measured rather than assumed.
   ref-check:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -116,52 +119,69 @@ jobs:
     needs: ref-check
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # 🔴 WHAT IS TRUE, AND THE INFERENCE THAT IS NOT. Both halves, because the second one
-    # is the kind of thing a release note quietly asserts.
+    # WHAT THIS JOB RELIES ON, in three separated parts: an invariant that cannot rot, a
+    # dated measurement, and a conclusion that is explicitly bound to that date.
     #
-    # TRUE, and measured 2026-09-12 16:40 UTC: the publish token is reachable only through
-    # this environment. There is no repository-wide secret, the token is an environment
-    # secret, and the environment's single policy admits `v*` tags.
+    # 🔴 THAT SEPARATION IS THE POINT, and it is here because this block has now been
+    # rewritten twice in one afternoon. The first version stated numbers that were false
+    # forty minutes later. The second dated the numbers — correctly — but wrote the
+    # conclusion under them in the PRESENT TENSE ("there are no required reviewers", "tag
+    # creation is unrestricted today"), and an hour later that conclusion was wrong while
+    # its own snapshot still looked honest. A dated fact carrying an undated inference is
+    # still an undated claim.
     #
-    #   environments/npm-publish          → protection_rules: [branch_policy]
-    #   …/deployment-branch-policies      → 1 rule: `v*`, type `tag`
-    #   actions/secrets                    → 0
-    #   environments/npm-publish/secrets   → 1: NPM_TOKEN
+    # THE INVARIANT. The publish token must be reachable only through an environment, and
+    # that environment must gate what may deploy to it. Then nothing outside this path can
+    # read the token — not another workflow, not another branch, not a copy of this file
+    # with the guards deleted — because the token is not where they can reach.
     #
-    # 🔴 NOT TRUE: "therefore only a real release can publish". The policy matches the
-    # NAME of the ref, and `workflow_dispatch` runs the workflow file FROM THAT REF. So
-    # anyone who can create a tag called `v1.2.3` brings their own copy of this file with
-    # it — without the ref-check job, without these guards — and that copy enters the
-    # environment and reads the token. The lock is on the door; the wall can be replaced.
+    # THE MEASUREMENT, 2026-09-12 18:06 UTC, taken with the commands below:
     #
-    # Measured too, so nobody has to assume: `repos/namixai/signer-mcp/rulesets` returns
-    # ZERO rulesets, the tag-protection endpoint returns Not Found, and the environment's
-    # only protection rule is `branch_policy` — there are no required reviewers. Tag
-    # creation is unrestricted today.
+    #   environments/npm-publish        → protection_rules: [branch_policy,
+    #                                                        required_reviewers]
+    #     required_reviewers            → namixai; prevent_self_review = false
+    #   …/deployment-branch-policies    → 1 rule: `v*`, type `tag`
+    #   actions/secrets                  → 0
+    #   environments/…/secrets           → 1: NPM_TOKEN
+    #   rulesets                         → 0
     #
-    # So the guards in this file are diagnostics for an honest operator, not a barrier
-    # against someone who can push a tag. Saying otherwise would be the same overreach
-    # this repository has spent two days removing from its own prose.
+    # WHAT FOLLOWS **AS OF THAT MEASUREMENT AND NOT AS A STANDING CLAIM**:
     #
-    # What would actually close it, and both are repository settings rather than workflow
-    # code: required reviewers on this environment — a human approves each deployment no
-    # matter what the workflow file says — and a ruleset restricting who may create `v*`
-    # tags. Until then, the honest description of this line is "the token lives behind an
-    # environment whose gate is a name".
+    #   * The invariant held. No repository-wide secret exists; the token is an
+    #     environment secret; the environment gates deployments to it.
+    #   * A tag alone is no longer enough. Someone who creates `v1.2.3` can bring their
+    #     own copy of this file — without the ref-check job, without these guards — but it
+    #     now stops at a human who has to click approve. That is a real barrier, and it is
+    #     the one that closed the hole this block described an hour ago.
+    #   * Said precisely, because "reviewed" implies more than this is:
+    #     `prevent_self_review` is FALSE and the reviewer list is one account, the same
+    #     one that authors and pushes here. So the gate is "a person from a list of one
+    #     must click", not "a second pair of eyes". Against an outsider who can push a tag
+    #     that is enough — they are not on the list. Against a mistake by the account
+    #     itself it is a pause, not a check.
+    #   * 🔴 THE ONE GAP LEFT, and it is named rather than left to be discovered: there is
+    #     still NO ruleset restricting who may create `v*` tags — `rulesets` returns zero.
+    #     So the noisy path is open: anyone with push access can create a release-shaped
+    #     tag and make a deployment request land in front of the reviewer. The reviewer
+    #     stops it; nothing stops it being asked.
     #
-    # Re-measure rather than trusting this block; if the API disagrees, the API is right:
+    # AND A CHANGE TO THE PROCEDURE that follows from the reviewer, so nobody reads it as a
+    # hang: a real publish now WAITS for an approval in the Actions UI before the job
+    # starts. A rehearsal does not, because it declares no environment.
     #
-    #   gh api repos/namixai/signer-mcp/environments
+    # Re-measure rather than trusting any of the above. If the date is old, treat the
+    # numbers AND the conclusion as unverified — both came from the same reading:
+    #
+    #   gh api repos/namixai/signer-mcp/environments/npm-publish
     #   gh api repos/namixai/signer-mcp/environments/npm-publish/deployment-branch-policies
-    #   gh api repos/namixai/signer-mcp/actions/secrets
     #   gh api repos/namixai/signer-mcp/environments/npm-publish/secrets
+    #   gh api repos/namixai/signer-mcp/actions/secrets
     #   gh api repos/namixai/signer-mcp/rulesets
     #
-    # And the environment is entered only by a real publish, because with it named
-    # unconditionally a REHEARSAL from a branch never started: run 34705999831 failed after
-    # two seconds with ZERO steps executed, the policy refusing a ref that is not a `v*`
-    # tag. A rehearsal needs no token — it publishes nothing — so it now runs where a
-    # person can actually use it.
+    # The environment is entered only by a real publish. With it named unconditionally a
+    # REHEARSAL from a branch never started: run 34705999831 failed after two seconds with
+    # ZERO steps executed, the policy refusing a ref that is not a `v*` tag. A rehearsal
+    # needs no token — it publishes nothing — so it runs where a person can use it.
     environment: ${{ inputs.dry_run == false && 'npm-publish' || '' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
