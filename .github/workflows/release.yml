@@ -27,8 +27,13 @@ name: release
 # `attestations` key.
 #
 # MANUAL ONLY. No push trigger, on purpose: publishing is a human decision, and the
-# decision belongs to the person whose name is on the package. The run also needs an
-# NPM_TOKEN secret, which is a second lock held by the same person.
+# decision belongs to the person whose name is on the package.
+#
+# The run also needs an NPM_TOKEN secret. Measured 12.09: this repository has **0
+# secrets**, so as written this workflow cannot publish anything even if someone runs it —
+# the publish step would fail on authentication. Adding that secret is a repository-admin
+# action and it is the real second lock. That is a feature of the current state, not an
+# oversight to route around.
 
 on:
   workflow_dispatch:
@@ -46,7 +51,12 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    environment: npm-publish # a second gate, if the repository configures reviewers on it
+    # ⚠️ Named so that a human gate CAN be attached, not because one exists. Measured
+    # 12.09: this repository has 0 configured environments and 0 secrets. GitHub creates
+    # a referenced environment on first run, so this line does not block anything by
+    # itself — it blocks only once someone adds required reviewers to it. Saying that
+    # plainly beats implying a protection that is not configured.
+    environment: npm-publish
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         with:
