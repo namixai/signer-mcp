@@ -166,22 +166,75 @@ The agent config block is identical for every venue — point `SIGNER_GATEWAY_UR
 
 ### `get_attestation`
 
-Returns the Nitro attestation document for the currently-running enclave. The PCR0 measurement here is what AWS signed when it booted the enclave; you can verify it matches the published build by hashing the corresponding EIF and comparing.
+Fetches the Nitro attestation document **with a fresh nonce** and verifies it locally
+before returning anything. PCR0/PCR1/PCR2 are read out of the signed bytes.
+
+🔴 **Corrected in 0.7.1, and worth saying plainly.** Until 0.7.0 this tool sent no nonce
+and verified nothing — it forwarded the gateway's JSON and described itself as proof that
+"the code currently signing your orders matches the published source". Neither half held.
+Without a nonce the document is bound to nothing, so a replay of an older attestation was
+indistinguishable from a fresh one, and "currently" was unearned. And nothing was checked:
+not the hardware signature, not the certificate chain, not the root. This is the only
+surface a third-party agent consumes, which made it the worst place in the product to keep
+a decorative verifier.
 
 ```json
 {
-  "pcr0_sha384": "...sha384 hex...",
-  "attestation_doc_b64": "...base64 COSE_Sign1, signed by AWS Nitro...",
-  "registered_onchain": true,
-  "timestamp_ms": 1785847208571
+  "verified": true,
+  "checks": {
+    "document_readable": true,
+    "nonce_echoed": true,
+    "root_pinned": true,
+    "chain_verified": true,
+    "signature_verified": true
+  },
+  "pcr0": "...sha384 hex, read from the SIGNED document...",
+  "nonce_sent": "...16 random bytes, hex...",
+  "nonce_in_document": "...the same value, or the check above is false...",
+  "root_sha256": "641a0321...bb5b",
+  "pinned_root_sha256": "641a0321...bb5b",
+  "proves": ["..."],
+  "do_not_trust_for": ["..."],
+  "document": { "attestation_doc_b64": "...", "pcr0_sha384": "...", "timestamp_ms": 0 }
 }
 ```
 
-`pcr0_sha384` is a convenience copy; the evidence is `attestation_doc_b64` — the
-AWS-signed COSE document containing all PCRs. Trust the document, not the field
-printed beside it.
+Every check can fail on its own, and `verified` is the AND of all five. When anything is
+false the document is still returned — you may want to look at it — but `proves` is empty
+and `do_not_trust_for` leads with the only honest reading: **a document that does not
+verify is not weaker evidence, it is none.**
 
-Read-only, works without a token.
+**What the tool cannot establish, stated in its own output rather than left to be
+inferred:** that PCR0 corresponds to the published source (rebuild from the public clone
+and compare, or ask the on-chain registry), and anything about a past signature — an
+attestation speaks about the code that answered *this* request.
+
+`root_pinned` is the load-bearing one. Whoever answers on `SIGNER_GATEWAY_URL` can mint
+their own CA under AWS's own subject name, sign their own chain and a document carrying
+any measurement they like, and echo the nonce; the other four checks then pass. The pinned
+fingerprint is what they cannot forge. There is deliberately no environment variable to
+relax it. To stop taking our word for that one constant, compare it once:
+
+```bash
+curl -sO https://aws-nitro-enclaves.amazonaws.com/AWS_NitroEnclaves_Root-G1.zip
+unzip -p AWS_NitroEnclaves_Root-G1.zip > aws-nitro-root
+openssl x509 -in aws-nitro-root -outform DER | shasum -a 256
+```
+
+⚠️ The sample above no longer shows `registered_onchain`. That field used to be in the
+gateway's response and is gone — measured against the live endpoint on 12 September, with
+a nonce the body carries `attestation_doc_b64`, `nonce`, `pcr0_sha384` and `timestamp_ms`,
+and without one the same minus `nonce`. It would have been the operator's own
+configuration reported back as if it were a fact about the chain, which is why nothing
+here depends on it.
+
+⚠️ **And the body's `nonce` echo is worth exactly nothing as a check.** The gateway writes
+it, the same way it writes `pcr0_sha384`. `nonce_echoed` compares against the nonce inside
+the **signed** document; a client that compared the body field instead would be asking the
+operator whether the operator was honest.
+
+Read-only, works without a token. Verification needs no network beyond the gateway call
+and no dependencies — Node's own crypto does the chain and the ES384 signature.
 
 ### `get_account`
 
@@ -300,7 +353,7 @@ Requires `SIGNER_API_TOKEN`.
 
 A trustworthy Signer is one whose enclave measurement matches a build you can audit. The workflow:
 
-1. Call `get_attestation` and copy the returned `pcr0_sha384` (or, stricter, read PCR0 out of the signed `attestation_doc_b64` itself).
+1. Call `get_attestation`. Check `verified` is true and read `pcr0` — the tool has already taken it out of the signed document, checked the nonce it just sent, walked the certificate chain and compared the root against the pinned fingerprint. If `verified` is false, stop here: `checks` names which one failed.
 2. Check that measurement against the **on-chain registry**, which is not ours to edit:
    `isPCR0Active(pcr0)` on `0x38b42eED740b0fDeb211bBDf773F2238cAEec240` (Base). Expect
    `true` and owner `0x21538eBF6598e5866BA496A954dE8E39097bFB59`.
