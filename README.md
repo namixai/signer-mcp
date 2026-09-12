@@ -45,7 +45,7 @@ If the agent gets compromised, the worst it can do is place orders inside your p
 > are pasting a config from an older post or cached answer, check this first — the symptom looks
 > like a broken server and is a stale default.
 
-3. **Restart Claude Desktop** and look for the 🔌 plug icon. You should see six tools listed under `signer`.
+3. **Restart Claude Desktop** and look for the 🔌 plug icon. You should see seven tools listed under `signer`: `list_venues`, `get_attestation`, `get_verified_price`, `get_account`, `place_order`, `place_hedge`, `cancel_order`. (The list is named rather than counted on purpose — a count in prose goes stale the moment a tool is added, and this one did: it said six until `get_verified_price` shipped.)
 4. **Try the read-only tools first.** Ask Claude:
    > "List the venues available through Signer, then return the current attestation document."
 
@@ -100,8 +100,9 @@ Then in your character / agent config:
 }
 ```
 
-The agent now exposes the same six tools (`list_venues`, `get_attestation`,
-`get_account`, `place_order`, `place_hedge`, `cancel_order`). Same trust model: the signing key
+The agent now exposes the same seven tools (`list_venues`, `get_attestation`,
+`get_verified_price`, `get_account`, `place_order`, `place_hedge`, `cancel_order`). Same
+trust model: the signing key
 never enters the Eliza process — start the agent on the read-only tools
 (`list_venues` / `get_attestation`) and verify the attestation before letting it
 place orders. Only `get_attestation` reaches the gateway; `list_venues` is served from a
@@ -119,6 +120,7 @@ Environment variables passed via the `env` block of `claude_desktop_config.json`
 | `SIGNER_GATEWAY_URL` | no | `https://signer-demo.usenami.io:8443` | The hosted attested demo enclave. Override for self-hosted deployments. |
 | `SIGNER_API_TOKEN` | yes (for account/order tools) | — | Bearer token provisioned at onboarding (invite-based pilot). `list_venues` **and** `get_attestation` work without one — but only `get_attestation` contacts the gateway (`list_venues` is static, see its section below); `get_account`, `place_order`, `place_hedge`, `cancel_order` require it. |
 | `SIGNER_FETCH_TIMEOUT_MS` | no | `30000` | Per-request fetch timeout in ms. Lower for CI / smoke tests; raise on slow links. Must be positive integer. |
+| `X402_PRIVATE_KEY` | only for `get_verified_price` | — | Payer key for the x402 gateway: each price query costs one cent in USDC on Base. Without it the tool refuses `no_payer_key` and spends nothing — it never sends an unpaid request and never falls back to an unverified source. Use a wallet funded for this and nothing else; the ceiling per payment is capped in code. |
 
 The MCP server itself stores nothing on disk. Tokens are read from environment on startup and held in memory for the lifetime of the process — kill the agent, the token goes with it.
 
@@ -235,6 +237,39 @@ operator whether the operator was honest.
 
 Read-only, works without a token. Verification needs no network beyond the gateway call
 and no dependencies — Node's own crypto does the chain and the ES384 signature.
+
+### `get_verified_price`
+
+Reads a Uniswap V3 token price from The Graph and returns it **only if four checks pass**.
+Runs entirely outside the enclave — this is a reading, not a signature, and the README says
+so where a reader might otherwise assume the enclave vouched for the number.
+
+```
+get_verified_price(token_address="0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2")
+```
+
+| the check | what it stops |
+|---|---|
+| the indexer signed the exact bytes that arrived | a re-serialised body hashes differently, so a "verified" answer over modified JSON |
+| that signer resolves on chain to an indexer with stake | a signature from nobody in particular |
+| the reading is a **usable** price | a verified signature over a GraphQL error, or over a zero, is not a price |
+| the price's own age, measured apart from the subgraph head's | a fresh head carrying a year-old price — prices are written in event handlers, so a dead market keeps a dead one under green indexing |
+
+On refusal **no price is returned**, and the answer names both the check that stopped it
+(`stage`) and that check's own reason (`cause`). `price_absent_or_zero`, `graphql_errors`
+and `price_stale` are three different problems with three different fixes, which is why
+they are three different words.
+
+**Name the token by address when you can.** A ticker is not a key in this subgraph: asking
+it for `WETH` returns several tokens with that name, all of them real. So every match is
+checked and returned rather than the first one being guessed at. With neither an address
+nor a ticker, the tool returns the most recently priced tokens, filtered to those that
+actually carry a price.
+
+**It costs money and says so up front:** one cent in USDC on Base per query, paid through
+the x402 gateway, which needs `X402_PRIVATE_KEY`. Without that key the tool refuses
+`no_payer_key` and spends nothing — it does not send an unpaid request, and it does not
+quietly fall back to an unverified source.
 
 ### `get_account`
 

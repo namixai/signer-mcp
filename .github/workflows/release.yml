@@ -1,0 +1,136 @@
+name: release
+
+# Publishing to npm WITH PROVENANCE, which is the whole reason this file exists and is
+# separate from ci.yml.
+#
+# 🔴 Provenance cannot be produced from a laptop. Not "is awkward" — cannot. Measured
+# against the code of the installed npm CLI (libnpmpublish/lib/publish.js): outside a
+# supported CI provider it throws
+#
+#     Automatic provenance generation not supported for provider: <name>
+#
+# and inside GitHub Actions without the OIDC permission it throws
+#
+#     Provenance generation in GitHub Actions requires "write" access to the "id-token" permission
+#
+# `npm publish --provenance --dry-run` does NOT exercise any of that: the dry run skips
+# provenance generation entirely and exits 0, so a green dry run proves nothing about
+# whether provenance will be attached. That is why this workflow exists rather than a
+# note saying "remember the flag".
+#
+# What provenance buys, stated plainly: a stranger can tie the published tarball to the
+# commit and workflow that built it, instead of taking our word that the bytes in the
+# registry came from the public source. For a product whose pitch is "check what is
+# running", an unattested package is the same hole as an unsigned measurement table.
+# Today the registry answers 404 for our attestations
+# (/-/npm/v1/attestations/@usenami/signer-mcp@0.7.0) and the version metadata carries no
+# `attestations` key.
+#
+# MANUAL ONLY. No push trigger, on purpose: publishing is a human decision, and the
+# decision belongs to the person whose name is on the package. The run also needs an
+# NPM_TOKEN secret, which is a second lock held by the same person.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type the version to publish, e.g. 0.8.0. It must match package.json.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # provenance: this is the permission whose absence throws the error above
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: npm-publish # a second gate, if the repository configures reviewers on it
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "20"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      # ── Three refusals before anything leaves the machine ──
+      #
+      # Each one is a mistake that has actually happened to this package or to a sibling
+      # repository, so none of them is hypothetical.
+      - name: The version you typed must be the version in the manifest
+        run: |
+          manifest="$(node -p "require('./package.json').version")"
+          if [ "$manifest" != "${{ inputs.confirm }}" ]; then
+            echo "refusing: you typed '${{ inputs.confirm }}', package.json says '$manifest'." >&2
+            echo "One of the two is wrong, and publishing the other one is not a recovery." >&2
+            exit 1
+          fi
+          echo "version: $manifest"
+
+      - name: The CHANGELOG must describe THIS version, not the last one
+        run: |
+          manifest="$(node -p "require('./package.json').version")"
+          top="$(grep -m1 -oE '^## [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | cut -d' ' -f2)"
+          if [ "$manifest" != "$top" ]; then
+            echo "refusing: manifest is $manifest, the top CHANGELOG entry is $top." >&2
+            echo "A release whose notes describe a different version is a release nobody can read." >&2
+            exit 1
+          fi
+          echo "changelog top entry: $top"
+
+      - name: That version must not already be in the registry
+        run: |
+          manifest="$(node -p "require('./package.json').version")"
+          if npm view "@usenami/signer-mcp@$manifest" version >/dev/null 2>&1; then
+            echo "refusing: $manifest is already published. npm versions are immutable;" >&2
+            echo "bump the version rather than trying to replace one." >&2
+            exit 1
+          fi
+          echo "$manifest is not in the registry yet"
+
+      - name: Install
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Unit tests
+        run: npm test
+      - name: First start — boot the built server over stdio
+        env:
+          SIGNER_GATEWAY_URL: https://nonexistent.example.invalid
+          SIGNER_API_TOKEN: sk_smoke_not_a_real_token
+          SIGNER_FETCH_TIMEOUT_MS: "2000"
+        run: npx tsx scripts/smoke-test.ts
+
+      - name: Publish with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance --access public
+
+      # A publish that says it succeeded while the attestation is missing is exactly the
+      # state we are trying to leave, so the run checks the registry rather than trusting
+      # its own exit code. The registry needs a moment to index.
+      - name: Prove the provenance is actually there
+        run: |
+          manifest="$(node -p "require('./package.json').version")"
+          url="https://registry.npmjs.org/-/npm/v1/attestations/@usenami/signer-mcp@$manifest"
+          for attempt in 1 2 3 4 5 6; do
+            code="$(curl -s -o /tmp/att.json -w '%{http_code}' "$url")"
+            if [ "$code" = "200" ]; then
+              echo "attestations endpoint: 200"
+              node -e "
+                const a = require('/tmp/att.json').attestations || [];
+                console.log('predicate types:', a.map(x => x.predicateType).join(', ') || '(none)');
+                if (a.length === 0) { console.error('200 with no attestations is not provenance'); process.exit(1); }
+              "
+              exit 0
+            fi
+            echo "attempt $attempt: $code — waiting for the registry to index"
+            sleep 10
+          done
+          echo "published, but the attestations endpoint never answered 200." >&2
+          echo "Say so out loud rather than reporting a clean release." >&2
+          exit 1
