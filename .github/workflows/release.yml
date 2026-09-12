@@ -42,6 +42,15 @@ on:
         description: 'Type the version to publish, e.g. 0.8.0. It must match package.json.'
         required: true
         type: string
+      # A rehearsal runs every guard, the build, the tests, the smoke check and the pack,
+      # and publishes nothing. Default true, so the harmless run is the one you get by
+      # pressing the button without thinking about it. Idea taken from PR #21, whose own
+      # workflow file is otherwise superseded by this one.
+      dry_run:
+        description: 'Rehearse only — run everything and publish nothing.'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -71,6 +80,43 @@ jobs:
       #
       # Each one is a mistake that has actually happened to this package or to a sibling
       # repository, so none of them is hypothetical.
+      # 🔴 A BRANCH MUST NOT BE ABLE TO PUBLISH. Found by a reviewer on PR #21 against its
+      # own workflow, and it applies to this one word for word.
+      #
+      # `workflow_dispatch` lets the caller choose the ref, and the run then executes THAT
+      # ref's copy of this file. Meanwhile `npm publish` runs the package's `prepare`
+      # script — which here is `npm run build` — from the checked-out tree, with
+      # NODE_AUTH_TOKEN in the environment. Put those together and anyone who can push a
+      # branch can run their own code with the publish token. Version 0.8.0 went out from
+      # `refs/heads/main` (its provenance says so), which is exactly the door being shut.
+      #
+      # So: tags only, and the tag has to name this version. A tag is also the thing a
+      # repository CAN protect, which is where the rest of this belongs — tag protection
+      # rules, or required reviewers on the environment below, or npm trusted publishing
+      # instead of a long-lived token. Those are repository settings, not workflow code,
+      # and they are not done: measured 12.09, this repository has 0 environments and 0
+      # secrets beyond the publish token.
+      - name: Publishing is allowed from a TAG only, and the tag must name this version
+        if: ${{ inputs.dry_run == false }}
+        run: |
+          manifest="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            echo "refusing: this run is on ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}', not a tag." >&2
+            echo "npm publish runs the checked-out tree's prepare script with the publish" >&2
+            echo "token in the environment, so a branch dispatch would run that branch's" >&2
+            echo "code with the token. Publish from a tag:" >&2
+            echo "    git tag v${manifest} && git push origin v${manifest}" >&2
+            echo "then dispatch this workflow with that tag selected as the ref." >&2
+            exit 1
+          fi
+          if [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
+            echo "refusing: the tag is '${GITHUB_REF_NAME}', the manifest says ${manifest}." >&2
+            echo "Expected tag name: v${manifest}. Publishing a tag that names a different" >&2
+            echo "version is how a release ends up untraceable to its own source." >&2
+            exit 1
+          fi
+          echo "ref: tag ${GITHUB_REF_NAME} — matches the manifest"
+
       - name: The version you typed must be the version in the manifest
         run: |
           manifest="$(node -p "require('./package.json').version")"
@@ -115,10 +161,24 @@ jobs:
           SIGNER_FETCH_TIMEOUT_MS: "2000"
         run: npx tsx scripts/smoke-test.ts
 
+      # What would actually go to the registry, printed before anything does. A reader of
+      # the run can then see the file list rather than trusting that it was the right one.
+      # Idea from PR #21.
+      - name: What would go to the registry
+        run: npm pack --dry-run
+
       - name: Publish with provenance
+        if: ${{ inputs.dry_run == false }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --provenance --access public
+
+      - name: Rehearsal — nothing was published
+        if: ${{ inputs.dry_run != false }}
+        run: |
+          echo "::notice::Rehearsal. Guards, build, tests, smoke check and pack all ran; the registry was not touched."
+          echo "For a real release: tag v$(node -p "require('./package.json').version"), push it, and dispatch this workflow on that tag with dry_run=false."
+
 
       # A publish that says it succeeded while the attestation is missing is exactly the
       # state we are trying to leave, so the run checks the registry rather than trusting
@@ -142,6 +202,7 @@ jobs:
       # The window is now about eight minutes with a growing pause, and every attempt is
       # printed so the waiting is visible rather than looking like a hang.
       - name: Prove the provenance is actually there
+        if: ${{ inputs.dry_run == false }}
         run: |
           manifest="$(node -p "require('./package.json').version")"
           # An empty manifest would build a URL without a version, which answers 404

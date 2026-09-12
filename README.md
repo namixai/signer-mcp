@@ -389,11 +389,47 @@ Requires `SIGNER_API_TOKEN`.
 A trustworthy Signer is one whose enclave measurement matches a build you can audit. The workflow:
 
 1. Call `get_attestation`. Check `verified` is true and read `pcr0` — the tool has already taken it out of the signed document, checked the nonce it just sent, walked the certificate chain and compared the root against the pinned fingerprint. If `verified` is false, stop here: `checks` names which one failed.
-2. Visit [usenami.io/signer/attestations](https://usenami.io/signer/attestations).
-3. Cross-reference the PCR0 against the published build for the current production version.
-4. Optionally rebuild the EIF from source and verify the measurement yourself — step-by-step instructions: [VERIFY-SIGNER-YOURSELF](https://github.com/namixai/signer/blob/main/docs/VERIFY-SIGNER-YOURSELF.md).
+2. **Ask the chain, which is not ours to edit.** Call `isPCR0Active(pcr0)` on
+   `0x38b42eED740b0fDeb211bBDf773F2238cAEec240` (Base). It returns two values and **both
+   decide**: whether that measurement is active, and the address of the owner who
+   registered it. Read what it answers rather than looking for a particular answer —
+   the registry keeps one active measurement per owner, so which of our lanes holds it
+   moves over time.
+3. **Find the same measurement in the tag table** of
+   [`docs/REPRODUCIBLE-BUILD.md`](https://github.com/namixai/signer/blob/main/docs/REPRODUCIBLE-BUILD.md).
+   Tags there are named `pcr0-<first eight hex of the measurement>` and each row names the
+   commit it was cut from and the lane it was cut for.
+4. **Rebuild the EIF from that commit** and compare the number you get against the one you
+   started from: [VERIFY-SIGNER-YOURSELF](https://github.com/namixai/signer/blob/main/docs/VERIFY-SIGNER-YOURSELF.md).
+   This is the step that needs nothing from us at all.
 
-If the published PCR0 doesn't match what `get_attestation` returns, **don't trade**. Open an issue.
+**Stop and do not trade** if any of these is true — and the first one is easy to miss:
+
+- the registry names an **owner you do not recognise**. A measurement can be active and
+  registered by somebody else entirely; "active" alone is not a pass, and an owner check
+  that only happens in your head is not a check.
+- the registry says that measurement is **not active**;
+- the **tag table does not name** your measurement;
+- your **own rebuild** produces a different number.
+
+Open an issue in any of those cases.
+
+> 🔴 **Why this no longer sends you to our page first.** The page at
+> [usenami.io/signer/attestations](https://usenami.io/signer/attestations) reads its live
+> value from the **public demo gateway** — checked: the page's own markup calls
+> `signer-demo.usenami.io:8443/attestation`. That is not necessarily the box your MCP
+> server talks to. When two of our boxes run the same measurement, comparing one against
+> the other looks like verification and proves nothing: you would be checking a gateway
+> against a gateway, both of them ours.
+>
+> That is not hypothetical today. The tag table linked above lists three measurements, two
+> of them retired, and records production and the public demo as sharing one measurement
+> since 2026-09-11 — so right now the comparison happens to agree, which is exactly when a
+> hollow check is hardest to notice.
+>
+> The page is still worth reading: it carries the registry address and the rebuild recipe.
+> But the three things that can contradict us — the chain, the tag table, and your own
+> build — are the ones that decide, and not one of them is a box we operate.
 
 ---
 
