@@ -54,6 +54,42 @@ describe("каждая из четырёх проверок останавлив
     expect(out.snapshot).toBeUndefined();
   });
 
+  it("🔴 бросок разборщика заголовка и бросок проверяльщика называются РАЗНО", async () => {
+    // Найдено отделом сингера 12.09. Один общий catch на два вызова называл ЛЮБОЙ бросок
+    // `attestation_header_unreadable` — а заголовок при этом мог разобраться прекрасно:
+    // испорченный `r` давал точку не на кривой, viem бросал, и оператор шёл чинить
+    // заголовок вместо подписи.
+    const parseThrew = {
+      ...passingBase(),
+      parseAttestationHeader: () => {
+        throw new Error("attestation missing field: r");
+      },
+    } as unknown as PriceDeps;
+    const a = read(await handleGetVerifiedPrice({ symbol: "WETH" }, parseThrew));
+    expect(a.ok).toBe(false);
+    expect(a.stage).toBe("attestation");
+    expect(a.cause).toBe("attestation_header_unreadable");
+
+    // А бросок ПРОВЕРЯЛЬЩИКА — это нарушение его собственного контракта, и имя другое.
+    const verifyThrew = {
+      ...passingBase(),
+      verifyAttestation: async () => {
+        // Ровно то, что печатал viem: сообщение НЕСЁТ отвергнутый скаляр.
+        throw new Error(`expected valid r: 1 <= n < 115792089237316195423570985008687907852837564279074904382605163141518161494337, got 0x${"f".repeat(64)}`);
+      },
+    } as unknown as PriceDeps;
+    const b = read(await handleGetVerifiedPrice({ symbol: "WETH" }, verifyThrew));
+    expect(b.ok).toBe(false);
+    expect(b.stage).toBe("attestation");
+    expect(b.cause).toBe("attestation_verifier_threw");
+    expect(b.cause).not.toBe("attestation_header_unreadable");
+
+    // 🔴 И сообщение библиотеки НЕ уходит наружу: оно печатает отвергнутое значение.
+    const text = JSON.stringify(b);
+    expect(text).not.toContain("f".repeat(32));
+    expect(text).not.toContain("expected valid r");
+  });
+
   it("подписант не резолвится в индексатора с залогом — цены нет", async () => {
     const deps = { ...passingBase(), resolveIndexer: async () => ({ ok: false, reason: "allocation_not_found" }) } as unknown as PriceDeps;
     const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
@@ -79,6 +115,58 @@ describe("каждая из четырёх проверок останавлив
     expect(out.ok).toBe(true);
     // Два числа, не одно: голова может быть свежей при цене годовой давности.
     expect(out.checks.price_age_measured_separately).toEqual({ source_lag_blocks: "1", price_lag_blocks: "10" });
+  });
+});
+
+describe("🔴 признак «деньги могли уйти» доезжает до вызывающего", () => {
+  // Найдено CTO на #30. `paidQuery` различает «платёж дошёл до сети, значит про трату
+  // ответа нет» и «отказали до того, как её собрали». Различие умирало у самой двери:
+  // отказ несёл только `status` и `detail`, и снаружи нельзя было понять, идти ли
+  // смотреть цепь. Это флаг про ДЕНЬГИ, и он обязан доехать.
+  it("spendUnknown: true доезжает как spend_unknown и велит смотреть цепь", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: false,
+        reason: "paid_request_failed",
+        detail: "fetch failed",
+        spendUnknown: true,
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok).toBe(false);
+    expect(out.cause).toBe("paid_request_failed");
+    expect(out.spend_unknown).toBe(true);
+    expect(String(out.spend_note)).toContain("check the payer address");
+  });
+
+  it("spendUnknown: false доезжает тоже — «ничего не ушло» это тоже ответ", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: false,
+        reason: "payment_over_cap",
+        detail: "rejected by spendControls",
+        spendUnknown: false,
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("payment_over_cap");
+    expect(out.spend_unknown).toBe(false);
+    expect(String(out.spend_note)).toContain("nothing was spent");
+  });
+
+  it("🔴 отсутствие признака НЕ превращается в «не тратили»", async () => {
+    // Путь, который про траты ничего не говорит, не должен получить `false` от нас:
+    // это было бы наше утверждение от имени кода, который его не делал.
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({ ok: false, reason: "no_payer_key" }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("no_payer_key");
+    expect("spend_unknown" in out).toBe(false);
+    expect("spend_note" in out).toBe(false);
   });
 });
 
