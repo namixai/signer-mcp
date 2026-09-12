@@ -174,26 +174,47 @@ jobs:
           fi
           echo "version: $manifest"
 
+      # 🔴 WHICH GUARDS ABORT A REHEARSAL, AND WHY THE LINE IS WHERE IT IS. Measured on
+      # run 34706067553: with every guard fatal, a rehearsal of the CURRENT version died
+      # at "already in the registry" — correct for a publish, useless as a rehearsal,
+      # because install, build, tests, the smoke check and pack never ran. That is the
+      # same defect as the tag check being skipped: a guard answering the wrong question
+      # for the mode it is in.
+      #
+      # The line: guards about the STATE OF THE WORLD (the ref, the changelog, whether
+      # the version is already out) REPORT in a rehearsal and abort a publish, because a
+      # rehearsal exists to tell you what a publish would do and then carry on. A guard
+      # about the caller's own input contradicting itself — the typed version not matching
+      # the manifest — stays fatal in both modes, because otherwise the rehearsal
+      # rehearses something nobody asked for.
       - name: The CHANGELOG must describe THIS version, not the last one
         run: |
+          fatal=1; verb="refusing"
+          if [ "${{ inputs.dry_run }}" != "false" ]; then fatal=0; verb="would refuse"; fi
           manifest="$(node -p "require('./package.json').version")"
           top="$(grep -m1 -oE '^## [0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | cut -d' ' -f2)"
           if [ "$manifest" != "$top" ]; then
-            echo "refusing: manifest is $manifest, the top CHANGELOG entry is $top." >&2
+            echo "${verb}: manifest is $manifest, the top CHANGELOG entry is $top." >&2
             echo "A release whose notes describe a different version is a release nobody can read." >&2
-            exit 1
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: a real publish would be REFUSED (CHANGELOG/version mismatch)"
+          else
+            echo "changelog top entry: $top"
           fi
-          echo "changelog top entry: $top"
 
       - name: That version must not already be in the registry
         run: |
+          fatal=1; verb="refusing"
+          if [ "${{ inputs.dry_run }}" != "false" ]; then fatal=0; verb="would refuse"; fi
           manifest="$(node -p "require('./package.json').version")"
           if npm view "@usenami/signer-mcp@$manifest" version >/dev/null 2>&1; then
-            echo "refusing: $manifest is already published. npm versions are immutable;" >&2
+            echo "${verb}: $manifest is already published. npm versions are immutable;" >&2
             echo "bump the version rather than trying to replace one." >&2
-            exit 1
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: a real publish would be REFUSED ($manifest is already in the registry)"
+          else
+            echo "$manifest is not in the registry yet"
           fi
-          echo "$manifest is not in the registry yet"
 
       - name: Install
         run: npm ci
