@@ -301,11 +301,29 @@ Requires `SIGNER_API_TOKEN`.
 A trustworthy Signer is one whose enclave measurement matches a build you can audit. The workflow:
 
 1. Call `get_attestation` and copy the returned `pcr0_sha384` (or, stricter, read PCR0 out of the signed `attestation_doc_b64` itself).
-2. Visit [usenami.io/signer/attestations](https://usenami.io/signer/attestations).
-3. Cross-reference the PCR0 against the published build for the current production version.
-4. Optionally rebuild the EIF from source and verify the measurement yourself — step-by-step instructions: [VERIFY-SIGNER-YOURSELF](https://github.com/namixai/signer/blob/main/docs/VERIFY-SIGNER-YOURSELF.md).
+2. Check that measurement against the **on-chain registry**, which is not ours to edit:
+   `isPCR0Active(pcr0)` on `0x38b42eED740b0fDeb211bBDf773F2238cAEec240` (Base). Expect
+   `true` and owner `0x21538eBF6598e5866BA496A954dE8E39097bFB59`.
+3. Find the same measurement in the **tag table** of
+   [`docs/REPRODUCIBLE-BUILD.md`](https://github.com/namixai/signer/blob/main/docs/REPRODUCIBLE-BUILD.md)
+   — it names the commit that produced it.
+4. Rebuild the EIF from that tag and compare the number you get with the one you started from:
+   [VERIFY-SIGNER-YOURSELF](https://github.com/namixai/signer/blob/main/docs/VERIFY-SIGNER-YOURSELF.md).
 
-If the published PCR0 doesn't match what `get_attestation` returns, **don't trade**. Open an issue.
+If the registry answers `false`, or the tag table does not name your measurement, or your
+rebuild produces a different number — **don't trade**. Open an issue.
+
+> 🔴 **Why this no longer points you at our page first.** The page at
+> [usenami.io/signer/attestations](https://usenami.io/signer/attestations) reads its live
+> value from the **public demo gateway**, not from the box your MCP server talks to. When
+> both boxes run the same measurement — as they do today — comparing one against the other
+> looks like verification and proves nothing: you are checking a gateway against a gateway,
+> both of them ours. The lanes have rotated apart three times already, most recently on
+> 2026-09-10.
+>
+> The page is still worth reading: it carries the registry address, the expected owner and
+> the rebuild recipe. But the three things that can contradict us — the chain, the tag, and
+> your own build — are the ones that decide, and none of them is a box we operate.
 
 ---
 
