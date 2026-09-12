@@ -118,6 +118,58 @@ describe("каждая из четырёх проверок останавлив
   });
 });
 
+describe("🔴 признак «деньги могли уйти» доезжает до вызывающего", () => {
+  // Найдено CTO на #30. `paidQuery` различает «платёж дошёл до сети, значит про трату
+  // ответа нет» и «отказали до того, как её собрали». Различие умирало у самой двери:
+  // отказ несёл только `status` и `detail`, и снаружи нельзя было понять, идти ли
+  // смотреть цепь. Это флаг про ДЕНЬГИ, и он обязан доехать.
+  it("spendUnknown: true доезжает как spend_unknown и велит смотреть цепь", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: false,
+        reason: "paid_request_failed",
+        detail: "fetch failed",
+        spendUnknown: true,
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.ok).toBe(false);
+    expect(out.cause).toBe("paid_request_failed");
+    expect(out.spend_unknown).toBe(true);
+    expect(String(out.spend_note)).toContain("check the payer address");
+  });
+
+  it("spendUnknown: false доезжает тоже — «ничего не ушло» это тоже ответ", async () => {
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({
+        ok: false,
+        reason: "payment_over_cap",
+        detail: "rejected by spendControls",
+        spendUnknown: false,
+      }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("payment_over_cap");
+    expect(out.spend_unknown).toBe(false);
+    expect(String(out.spend_note)).toContain("nothing was spent");
+  });
+
+  it("🔴 отсутствие признака НЕ превращается в «не тратили»", async () => {
+    // Путь, который про траты ничего не говорит, не должен получить `false` от нас:
+    // это было бы наше утверждение от имени кода, который его не делал.
+    const deps = {
+      ...passingBase(),
+      paidQuery: async () => ({ ok: false, reason: "no_payer_key" }),
+    } as unknown as PriceDeps;
+    const out = read(await handleGetVerifiedPrice({ symbol: "WETH" }, deps));
+    expect(out.cause).toBe("no_payer_key");
+    expect("spend_unknown" in out).toBe(false);
+    expect("spend_note" in out).toBe(false);
+  });
+});
+
 describe("отказы платёжного пути не выдаются за отказ проверки", () => {
   it("без ключа плательщика ничего не тратится и отказ назван", async () => {
     const deps = { ...passingBase(), paidQuery: async () => ({ ok: false, reason: "no_payer_key", detail: "set X402_PRIVATE_KEY to spend" }) } as unknown as PriceDeps;
