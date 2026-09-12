@@ -43,6 +43,16 @@ const fixtureNonce = (
 ).nonce;
 
 /** A guard that cannot be optimised away and says which mutation failed to apply. */
+/** CBOR head byte(s) for a major type and length — enough for rebuilding test documents. */
+function headOf(major: number, n: number): Buffer {
+  if (n < 24) return Buffer.from([(major << 5) | n]);
+  if (n < 0x100) return Buffer.from([(major << 5) | 24, n]);
+  const b = Buffer.alloc(3);
+  b[0] = (major << 5) | 25;
+  b.writeUInt16BE(n, 1);
+  return b;
+}
+
 function mutationApplied(condition: boolean, what: string): void {
   if (!condition) throw new Error(`MUTATION DID NOT APPLY: ${what}`);
 }
@@ -170,6 +180,41 @@ describe("CBOR — a legal re-packing is not a defect", () => {
     expect(wrapped.pcr0).toBe(plain.pcr0);
     expect(wrapped.checks.signature_verified).toBe(plain.checks.signature_verified);
     expect(wrapped.checks.root_pinned).toBe(plain.checks.root_pinned);
+  });
+
+  it("🔴 refuses tag 18 INSIDE the document — header and payload both", () => {
+    // The first version of the tag branch unwrapped tag 18 anywhere, and the same decoder
+    // reads sign1[0] and sign1[2]. A tagged protected header or payload would have
+    // unwrapped and then passed the type checks: a document no COSE implementation
+    // produces, accepted over bytes whose framing we had rewritten.
+    const body = fixture();
+    const raw = Buffer.from(body.attestation_doc_b64 as string, "base64");
+    const sign1 = decodeCbor(raw, true) as Buffer[];
+    const bstr = (x: Buffer) => Buffer.concat([headOf(2, x.length), x]);
+
+    for (const [label, prot, payload] of [
+      ["tagged protected header", Buffer.concat([Buffer.from([0xd2]), sign1[0]!]), sign1[2]!],
+      ["tagged payload", sign1[0]!, Buffer.concat([Buffer.from([0xd2]), sign1[2]!])],
+    ] as Array<[string, Buffer, Buffer]>) {
+      const rebuilt = Buffer.concat([
+        headOf(4, 4),
+        bstr(prot),
+        Buffer.from([0xa0]),
+        bstr(payload),
+        bstr(sign1[3]!),
+      ]);
+      mutationApplied(!rebuilt.equals(raw), `${label}: rebuild produced the original bytes`);
+      const v = verifyAttestationBody(
+        { ...body, attestation_doc_b64: rebuilt.toString("base64") },
+        fixtureNonce,
+      );
+      // Must be unreadable — not "parsed and then failed a check", which is what the
+      // recursive version produced and which misdirects the reader to the signature.
+      expect(v.verified, label).toBe(false);
+      expect(typeof v.unreadable, label).toBe("string");
+      expect(v.pcr0, label).toBeUndefined();
+      expect(v.checks.document_readable, label).toBe(false);
+    }
   });
 
   it("refuses any OTHER tag by number rather than swallowing it", () => {

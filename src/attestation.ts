@@ -106,7 +106,7 @@ type CborValue =
  * Decode one CBOR item at `at`. Throws on anything it does not support; every caller in
  * this file is inside a try, and the failure becomes a named refusal rather than a stack.
  */
-function decodeAt(b: Buffer, at: number): [CborValue, number] {
+function decodeAt(b: Buffer, at: number, coseTagOk = false): [CborValue, number] {
   if (at >= b.length) throw new Error("truncated");
   const major = b[at]! >> 5;
   const minor = b[at]! & 0x1f;
@@ -204,7 +204,20 @@ function decodeAt(b: Buffer, at: number): [CborValue, number] {
       // where this is called. Any other tag is refused BY NUMBER rather than swallowed:
       // an attestation document has no business carrying one, and silently ignoring
       // semantics we do not understand is how a parser starts agreeing to things.
-      if (val !== 18) throw new Error(`unexpected CBOR tag ${val}`);
+      // 🔴 The first version of this branch said "only at the outermost level as a
+      // consequence of where this is called" — and that was wrong, because this same
+      // function reads `sign1[0]` and `sign1[2]`. A tagged protected header or a tagged
+      // payload would have unwrapped and then passed the type checks: a document no COSE
+      // implementation produces, accepted over bytes whose framing we had rewritten.
+      // Caught in review on the PR that introduced it. The permission is now explicit and
+      // does NOT propagate — a nested tag, a second tag 18 included, is refused by number.
+      if (!(coseTagOk && val === 18)) {
+        throw new Error(
+          coseTagOk
+            ? `unexpected CBOR tag ${val} (only tag 18 is legal here)`
+            : `unexpected CBOR tag ${val} (no tag is legal at this position)`,
+        );
+      }
       return decodeAt(b, i);
     }
     case 7: {
@@ -221,8 +234,15 @@ function decodeAt(b: Buffer, at: number): [CborValue, number] {
   }
 }
 
-export function decodeCbor(b: Buffer): CborValue {
-  const [value] = decodeAt(b, 0);
+/**
+ * Decode one CBOR value.
+ *
+ * `coseTagOk` is the ENVELOPE permission and is passed only where a COSE tag may legally
+ * appear: the attestation document as a whole. Anything decoded out of that document —
+ * the protected header, the payload — is decoded without it, so a tag inside is refused.
+ */
+export function decodeCbor(b: Buffer, coseTagOk = false): CborValue {
+  const [value] = decodeAt(b, 0, coseTagOk);
   return value;
 }
 
@@ -306,7 +326,8 @@ export function verifyAttestationBody(
   let raw: Buffer;
   try {
     raw = Buffer.from(b64, "base64");
-    const decoded = decodeCbor(raw);
+    // The envelope, and the only place in this file where a CBOR tag is allowed.
+    const decoded = decodeCbor(raw, true);
     if (!Array.isArray(decoded) || decoded.length !== 4) {
       return fail("the document is not a 4-item COSE_Sign1 array");
     }
