@@ -60,11 +60,28 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # ⚠️ Named so that a human gate CAN be attached, not because one exists. Measured
-    # 12.09: this repository has 0 configured environments and 0 secrets. GitHub creates
-    # a referenced environment on first run, so this line does not block anything by
-    # itself — it blocks only once someone adds required reviewers to it. Saying that
-    # plainly beats implying a protection that is not configured.
+    # 🔴 THIS LINE IS NOT A GATE TODAY, AND THE PR THAT ADDED IT IMPLIED IT WAS. Measured
+    # again with the API rather than from memory:
+    #
+    #   repos/namixai/signer-mcp/environments        → 1: npm-publish,
+    #                                                   protection_rules: [],
+    #                                                   deployment_branch_policy: null
+    #   repos/.../actions/secrets                    → 1: NPM_TOKEN
+    #   repos/.../environments/npm-publish/secrets   → 0
+    #
+    # Two consequences, and the second is the sharper one. The environment has no required
+    # reviewers and no branch policy, so naming it delays nothing. And NPM_TOKEN is a
+    # REPOSITORY secret, not an environment secret — so the environment cannot scope
+    # access to it at all: any workflow, on any branch, can read that token. Putting
+    # `environment:` on the job does not change that by one bit.
+    #
+    # What actually holds today is the tag check below, inside this workflow. That is
+    # real, and it is narrower than "protected by an environment" sounds.
+    #
+    # What would make this line a gate, in the repository settings and therefore in the
+    # owner's hands rather than in this file: required reviewers on the environment, a
+    # deployment branch/tag policy, and MOVING NPM_TOKEN from a repository secret to an
+    # environment secret so that reaching it requires passing the environment.
     environment: npm-publish
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -96,26 +113,42 @@ jobs:
       # instead of a long-lived token. Those are repository settings, not workflow code,
       # and they are not done: measured 12.09, this repository has 0 environments and 0
       # secrets beyond the publish token.
+      # 🔴 RUNS ON EVERY RUN, INCLUDING A REHEARSAL. It used to be skipped when
+      # dry_run was true, and the rehearsal then reported "all guards passed" while this
+      # guard had not run at all — a green that answered a question nobody asked. A
+      # rehearsal is worth having precisely because it tells you whether a REAL run would
+      # be allowed, so the check happens either way and only the consequence differs:
+      # fatal for a real publish, reported for a rehearsal.
       - name: Publishing is allowed from a TAG only, and the tag must name this version
-        if: ${{ inputs.dry_run == false }}
         run: |
           manifest="$(node -p "require('./package.json').version")"
+          fatal=1
+          verb="refusing"
+          if [ "${{ inputs.dry_run }}" != "false" ]; then
+            fatal=0
+            # A rehearsal reports rather than refuses, and must not say "refusing" — a
+            # word that stops one reader and is ignored by the next is worse than either.
+            verb="would refuse"
+          fi
           if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
-            echo "refusing: this run is on ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}', not a tag." >&2
+            echo "${verb}: this run is on ${GITHUB_REF_TYPE} '${GITHUB_REF_NAME}', not a tag." >&2
             echo "npm publish runs the checked-out tree's prepare script with the publish" >&2
             echo "token in the environment, so a branch dispatch would run that branch's" >&2
             echo "code with the token. Publish from a tag:" >&2
             echo "    git tag v${manifest} && git push origin v${manifest}" >&2
             echo "then dispatch this workflow with that tag selected as the ref." >&2
-            exit 1
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: a real publish from this ref would be REFUSED (not a tag)"
           fi
           if [ "${GITHUB_REF_NAME}" != "v${manifest}" ]; then
-            echo "refusing: the tag is '${GITHUB_REF_NAME}', the manifest says ${manifest}." >&2
+            echo "${verb}: the tag is '${GITHUB_REF_NAME}', the manifest says ${manifest}." >&2
             echo "Expected tag name: v${manifest}. Publishing a tag that names a different" >&2
             echo "version is how a release ends up untraceable to its own source." >&2
-            exit 1
+            [ "$fatal" = "1" ] && exit 1
+            echo "::warning::rehearsal: a real publish from this ref would be REFUSED (tag/version mismatch)"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            echo "ref: tag ${GITHUB_REF_NAME} — matches the manifest"
           fi
-          echo "ref: tag ${GITHUB_REF_NAME} — matches the manifest"
 
       - name: The version you typed must be the version in the manifest
         run: |
@@ -176,8 +209,17 @@ jobs:
       - name: Rehearsal — nothing was published
         if: ${{ inputs.dry_run != false }}
         run: |
-          echo "::notice::Rehearsal. Guards, build, tests, smoke check and pack all ran; the registry was not touched."
-          echo "For a real release: tag v$(node -p "require('./package.json').version"), push it, and dispatch this workflow on that tag with dry_run=false."
+          # 🔴 This message used to say "Guards, build, tests, smoke check and pack all
+          # ran", and the tag guard was skipped in a rehearsal, so that sentence was false
+          # about the one guard a reader most wants confirmed. The guard runs on every run
+          # now; a rehearsal on a branch reports a ::warning:: saying a real publish would
+          # be refused. So this line enumerates what ran and points at that warning
+          # instead of claiming a clean sweep.
+          echo "::notice::Rehearsal. Nothing was published."
+          echo "What ran: the tag/version check (reporting only — look for a ::warning:: above if it would refuse),"
+          echo "the manifest/CHANGELOG/registry guards, install, build, unit tests, the built-server smoke test, and pack."
+          echo "What did NOT run: npm publish, and the provenance verification that follows it."
+          echo "For a real release: create tag v$(node -p "require('./package.json').version"), push it, and dispatch this workflow on that tag with dry_run=false."
 
 
       # A publish that says it succeeded while the attestation is missing is exactly the
