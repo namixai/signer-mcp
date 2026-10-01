@@ -4,6 +4,8 @@
 
 `signer-mcp` is the public face of [Usenami Signer](https://usenami.io/signer). It gives Claude Desktop, Cursor, ElizaOS, and any other MCP-aware client a six-tool surface for trading real CEX/DEX perp accounts (Binance, OKX, Asterdex, KuCoin, Bybit, Hyperliquid) without the signing secret ever entering the agent's process — or yours.
 
+**21 September 2026: we've switched off the hosted Signer this package talks to.** We have no users yet, so we're not paying for idle machines. The package still installs, and `list_venues` still answers, because that manifest is static. A venue marked `live` there means the enclave will sign for it once a key is provisioned, not that a service is running. Anything that has to reach the gateway fails: on 1 October 2026 `get_attestation` came back with Cloudflare's 522. The invite-based pilot described below is on hold while the lanes are off. Everything below about what the enclave does still holds, and the reproducible build and the on-chain registry haven't changed. The notice at the top of [namixai/signer](https://github.com/namixai/signer#readme) says the same from the service's side.
+
 Status: **v0 (alpha), invite-based pilot**. Venue manifest, attestation, account read, place/cancel order, and a two-leg hedge. ⚠️ **Assume orders are real.** Which venue and network your orders hit is decided by the policy bound to your token, and neither this page nor `list_venues` can tell you which — ask whoever issued the token. There is no implicit testnet safety net, so treat every order as mainnet money until you have confirmed otherwise. Read [`place_order`](#place_order) before sending anything.
 
 ---
